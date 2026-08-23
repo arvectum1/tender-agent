@@ -108,7 +108,10 @@ class CompactWireProviderClaim(ContractModel):
     field_path: str = Field(min_length=1)
     value: Any
     provider_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
-    evidence_references: list[CompactWireEvidenceReference] = Field(default_factory=list)
+    evidence_references: list[CompactWireEvidenceReference] = Field(
+        min_length=1,
+        max_length=1,
+    )
 
 
 class CompactWireProviderResponse(ContractModel):

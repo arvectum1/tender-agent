@@ -221,12 +221,12 @@ def test_compact_response_rejects_cross_batch_fragment_safely():
     _assert_sanitized(raised.value)
 
 
-def test_compact_response_rejects_duplicate_reference_safely():
+def test_compact_response_rejects_multiple_references_at_schema_boundary_safely():
     request = _request()
     fragment_id = request.evidence_packet.fragments[0].fragment_id
     reference = {"fragment_id": fragment_id, "quote": _SOURCE_TEXT}
     with pytest.raises(
-        InvalidProviderResponseError, match="provider_wire_duplicate_reference"
+        InvalidProviderResponseError, match="provider_wire_reference_schema_invalid"
     ) as raised:
         _parse(
             request, [_claim(fragment_id, evidence_references=[reference, reference])]
