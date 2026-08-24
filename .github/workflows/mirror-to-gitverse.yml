@@ -66,7 +66,7 @@ jobs:
           GITVERSE_REPOSITORY: ${{ vars.GITVERSE_REPO }}
         run: |
           echo "### GitVerse mirror updated" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Source: \`${GITHUB_REPOSITORY}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Target: \`arvectum/${GITVERSE_REPOSITORY}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Trigger: \`${GITHUB_EVENT_NAME}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- SHA: \`${GITHUB_SHA}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Source: ${GITHUB_REPOSITORY}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Target: arvectum/${GITVERSE_REPOSITORY}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Trigger: ${GITHUB_EVENT_NAME}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- SHA: ${GITHUB_SHA}" >> "$GITHUB_STEP_SUMMARY"
