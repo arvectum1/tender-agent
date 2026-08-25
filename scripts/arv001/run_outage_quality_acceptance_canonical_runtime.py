@@ -2,9 +2,9 @@
 """Durable canonical-runtime owner for governed ARV-001 outage acceptance.
 
 The foreground launcher deliberately does not own the long-running model or
-acceptance process.  A detached worker owns the approved llama-server for the
+acceptance process. A detached worker owns the approved llama-server for the
 entire one-shot child invocation, so an interactive caller timing out cannot
-tear down the runtime mid-batch.  The worker never retries the outage runner.
+tear down the runtime mid-batch. The worker never retries the outage runner.
 
 ``--preflight-only`` is a zero-generation runtime check and does not read or
 consume a product-owner acknowledgement.
@@ -19,6 +19,8 @@ import re
 import stat
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -92,7 +94,9 @@ class CanonicalRuntimeOwnerBlocked(RuntimeError):
     """Fail-closed boundary with a repository-owned sanitized reason code."""
 
     def __init__(self, code: str) -> None:
-        self.code = code if _SAFE_CODE.fullmatch(code) else "canonical_runtime_owner_failed"
+        self.code = (
+            code if _SAFE_CODE.fullmatch(code) else "canonical_runtime_owner_failed"
+        )
         super().__init__(self.code)
 
 
@@ -162,7 +166,9 @@ def _validate_runtime_assets(
     binary = llama_server_path.expanduser().resolve(strict=False)
     gguf_profile, gguf_errors = canonical._validate_approved_gguf(gguf)
     if gguf_errors or gguf_profile is None:
-        raise CanonicalRuntimeOwnerBlocked(gguf_errors[0] if gguf_errors else "approved_gguf_invalid")
+        raise CanonicalRuntimeOwnerBlocked(
+            gguf_errors[0] if gguf_errors else "approved_gguf_invalid"
+        )
     binary_profile, binary_errors = canonical._validate_approved_llama_server(binary)
     if binary_errors or binary_profile is None:
         raise CanonicalRuntimeOwnerBlocked(
@@ -171,79 +177,77 @@ def _validate_runtime_assets(
     return gguf, binary, gguf_profile, binary_profile
 
 
-def _runtime_probe(
-    *, gguf: Path, binary: Path, gguf_profile: dict[str, str], binary_profile: dict[str, str]
-) -> tuple[ManagedLoopbackRuntime, dict[str, str], Any]:
-    runtime = ManagedLoopbackRuntime(
+@contextmanager
+def _verified_runtime(
+    *,
+    gguf: Path,
+    binary: Path,
+    gguf_profile: dict[str, str],
+    binary_profile: dict[str, str],
+) -> Iterator[dict[str, str]]:
+    """Keep the approved runtime and disposable environment alive for the caller."""
+
+    with ManagedLoopbackRuntime(
         binary=binary,
         gguf=gguf,
         timeout_seconds=120.0,
-    )
-    runtime.start()
-    try:
+    ) as runtime:
         if runtime.port is None:
             raise CanonicalRuntimeOwnerBlocked("runtime_port_missing")
-        environment_context = ephemeral_runtime_environment(
+        with ephemeral_runtime_environment(
             port=runtime.port,
             binary_sha256=binary_profile["binary_sha256"],
             gguf_sha256=gguf_profile["gguf_sha256"],
             overrides={},
-        )
-        effective, private_env = environment_context.__enter__()
-        errors = validate_effective_runtime_environment(effective, port=runtime.port)
-        if errors:
-            environment_context.__exit__(None, None, None)
-            raise CanonicalRuntimeOwnerBlocked(errors[0])
-        with scoped_environment(effective):
-            tokenizer = tokenizer_from_environment()
-            probe, probe_errors = probe_zero_generation(
-                loopback_base_url=f"http://127.0.0.1:{runtime.port}",
-                tokenizer_url=effective["ARV003_LLAMA_TOKENIZER_URL"],
-                tokenizer_adapter=tokenizer,
-                tokenizer_identity=effective["ARV003_TOKENIZER_IDENTITY"],
+        ) as (effective, _private_env):
+            errors = validate_effective_runtime_environment(
+                effective, port=runtime.port
             )
-        if probe_errors or probe is None:
-            environment_context.__exit__(None, None, None)
-            raise CanonicalRuntimeOwnerBlocked(
-                probe_errors[0] if probe_errors else "zero_generation_probe_failed"
-            )
-        if (
-            probe.get("models_probe_verified") is not True
-            or probe.get("tokenizer_probe_verified") is not True
-            or probe.get("tokenizer_persistent") is not True
-            or probe.get("provider_generation_calls") != 0
-        ):
-            environment_context.__exit__(None, None, None)
-            raise CanonicalRuntimeOwnerBlocked("zero_generation_probe_contract_invalid")
-        # The caller owns both contexts after a successful probe.  Returning the
-        # context object keeps the disposable environment alive for the child.
-        return runtime, effective, environment_context
-    except BaseException:
-        runtime.stop()
-        raise
-
-
-def _close_runtime_probe(runtime: ManagedLoopbackRuntime, environment_context: Any) -> None:
-    try:
-        environment_context.__exit__(None, None, None)
-    finally:
-        runtime.stop()
+            if errors:
+                raise CanonicalRuntimeOwnerBlocked(errors[0])
+            with scoped_environment(effective):
+                tokenizer = tokenizer_from_environment()
+                probe, probe_errors = probe_zero_generation(
+                    loopback_base_url=f"http://127.0.0.1:{runtime.port}",
+                    tokenizer_url=effective["ARV003_LLAMA_TOKENIZER_URL"],
+                    tokenizer_adapter=tokenizer,
+                    tokenizer_identity=effective["ARV003_TOKENIZER_IDENTITY"],
+                )
+            if probe_errors or probe is None:
+                raise CanonicalRuntimeOwnerBlocked(
+                    probe_errors[0]
+                    if probe_errors
+                    else "zero_generation_probe_failed"
+                )
+            if (
+                probe.get("models_probe_verified") is not True
+                or probe.get("tokenizer_probe_verified") is not True
+                or probe.get("tokenizer_persistent") is not True
+                or probe.get("provider_generation_calls") != 0
+            ):
+                raise CanonicalRuntimeOwnerBlocked(
+                    "zero_generation_probe_contract_invalid"
+                )
+            yield effective
 
 
 def _preflight_only(args: argparse.Namespace) -> int:
-    if args.expected_head is None or args.gguf_path is None or args.llama_server_path is None:
+    if (
+        args.expected_head is None
+        or args.gguf_path is None
+        or args.llama_server_path is None
+    ):
         raise CanonicalRuntimeOwnerBlocked("preflight_arguments_missing")
     _repository_preflight(args.expected_head)
     gguf, binary, gguf_profile, binary_profile = _validate_runtime_assets(
         args.gguf_path, args.llama_server_path
     )
-    runtime, effective, environment_context = _runtime_probe(
+    with _verified_runtime(
         gguf=gguf,
         binary=binary,
         gguf_profile=gguf_profile,
         binary_profile=binary_profile,
-    )
-    try:
+    ) as effective:
         body = {
             "schema_version": STATE_SCHEMA_VERSION,
             "status": "PRE_PROVIDER_RUNTIME_VERIFIED",
@@ -257,9 +261,7 @@ def _preflight_only(args: argparse.Namespace) -> int:
             "outage_runner_invocations": 0,
         }
         print(json.dumps(body, sort_keys=True))
-        return 0
-    finally:
-        _close_runtime_probe(runtime, environment_context)
+    return 0
 
 
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
@@ -302,7 +304,9 @@ def _read_request(path: Path) -> tuple[Path, dict[str, str]]:
         raise CanonicalRuntimeOwnerBlocked("worker_request_schema_invalid")
     if raw.get("schema_version") != REQUEST_SCHEMA_VERSION:
         raise CanonicalRuntimeOwnerBlocked("worker_request_schema_invalid")
-    if not all(isinstance(raw.get(key), str) and raw[key] for key in _REQUEST_KEYS):
+    if not all(
+        isinstance(raw.get(key), str) and raw[key] for key in _REQUEST_KEYS
+    ):
         raise CanonicalRuntimeOwnerBlocked("worker_request_schema_invalid")
     return request_path.parent, {key: str(value) for key, value in raw.items()}
 
@@ -359,18 +363,19 @@ def _worker(args: argparse.Namespace) -> int:
         raise CanonicalRuntimeOwnerBlocked("worker_request_missing")
     root, request = _read_request(args.request_file)
     try:
-        _write_state(root, state="runtime_validation", expected_head=request["expected_head"])
+        _write_state(
+            root, state="runtime_validation", expected_head=request["expected_head"]
+        )
         _repository_preflight(request["expected_head"])
         gguf, binary, gguf_profile, binary_profile = _validate_runtime_assets(
             Path(request["gguf_path"]), Path(request["llama_server_path"])
         )
-        runtime, effective, environment_context = _runtime_probe(
+        with _verified_runtime(
             gguf=gguf,
             binary=binary,
             gguf_profile=gguf_profile,
             binary_profile=binary_profile,
-        )
-        try:
+        ) as effective:
             _write_state(
                 root,
                 state="runtime_verified",
@@ -387,9 +392,9 @@ def _worker(args: argparse.Namespace) -> int:
                 expected_head=request["expected_head"],
                 outage_runner_invocations=1,
             )
-            # Intentionally NO timeout here.  The repository provider policy owns
-            # request latency; the detached worker owns the runtime until the
-            # one permitted outage child reaches a terminal state.
+            # Intentionally NO timeout here. The repository provider policy owns
+            # request latency; this worker owns the runtime until the one
+            # permitted outage child reaches a terminal state.
             with scoped_environment(effective):
                 completed = subprocess.run(
                     _outage_command(request),
@@ -410,13 +415,14 @@ def _worker(args: argparse.Namespace) -> int:
                 sanitized_failure_code=(
                     None
                     if completed.returncode == 0
-                    else str(result.get("failure_code") or _safe_stderr_code(completed.stderr))
+                    else str(
+                        result.get("failure_code")
+                        or _safe_stderr_code(completed.stderr)
+                    )
                 ),
                 result=result,
             )
             return 0 if completed.returncode == 0 else 3
-        finally:
-            _close_runtime_probe(runtime, environment_context)
     except CanonicalRuntimeOwnerBlocked as exc:
         _write_state(
             root,
@@ -466,13 +472,17 @@ def _launch(args: argparse.Namespace) -> int:
     assert args.product_owner_ack is not None
 
     _repository_preflight(args.expected_head)
-    # Cheap identity validation happens before a detached worker can touch ack.
     _validate_runtime_assets(args.gguf_path, args.llama_server_path)
 
-    root = _outside_repository(args.private_root, "private_root_inside_repository")
-    if root.exists() or root.is_symlink():
+    raw_root = args.private_root.expanduser()
+    if raw_root.is_symlink():
+        raise CanonicalRuntimeOwnerBlocked("private_root_unsafe")
+    root = _outside_repository(raw_root, "private_root_inside_repository")
+    if root.exists():
         raise CanonicalRuntimeOwnerBlocked("private_root_already_exists")
-    ack = _outside_repository(args.product_owner_ack, "product_owner_ack_missing", strict=True)
+    ack = _outside_repository(
+        args.product_owner_ack, "product_owner_ack_missing", strict=True
+    )
     if ack.is_symlink() or not ack.is_file():
         raise CanonicalRuntimeOwnerBlocked("product_owner_ack_unsafe")
     if acknowledgement_consumption_marker(ack).exists():
@@ -484,11 +494,15 @@ def _launch(args: argparse.Namespace) -> int:
         "schema_version": REQUEST_SCHEMA_VERSION,
         "expected_head": args.expected_head,
         "gguf_path": str(args.gguf_path.expanduser().resolve(strict=False)),
-        "llama_server_path": str(args.llama_server_path.expanduser().resolve(strict=False)),
+        "llama_server_path": str(
+            args.llama_server_path.expanduser().resolve(strict=False)
+        ),
         "candidate_root": str(args.candidate_root.expanduser().resolve(strict=False)),
         "intake_root": str(args.intake_root.expanduser().resolve(strict=False)),
         "approved_policy": str(args.approved_policy.expanduser().resolve(strict=False)),
-        "baseline_descriptor": str(args.baseline_descriptor.expanduser().resolve(strict=False)),
+        "baseline_descriptor": str(
+            args.baseline_descriptor.expanduser().resolve(strict=False)
+        ),
         "product_owner_ack": str(ack),
         "database_path": str(root / "acceptance.sqlite3"),
         "data_dir": str(root / "application-data"),
@@ -545,7 +559,9 @@ def _launch(args: argparse.Namespace) -> int:
 def _inspect(args: argparse.Namespace) -> int:
     if args.private_root is None:
         raise CanonicalRuntimeOwnerBlocked("inspect_private_root_missing")
-    root = _outside_repository(args.private_root, "inspect_private_root_invalid", strict=True)
+    root = _outside_repository(
+        args.private_root, "inspect_private_root_invalid", strict=True
+    )
     state_path = root / _STATE_FILENAME
     try:
         if state_path.is_symlink() or not state_path.is_file():
@@ -553,7 +569,10 @@ def _inspect(args: argparse.Namespace) -> int:
         payload = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise CanonicalRuntimeOwnerBlocked("runtime_state_invalid") from exc
-    if not isinstance(payload, dict) or payload.get("schema_version") != STATE_SCHEMA_VERSION:
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != STATE_SCHEMA_VERSION
+    ):
         raise CanonicalRuntimeOwnerBlocked("runtime_state_invalid")
     print(json.dumps(payload, sort_keys=True))
     return 0
