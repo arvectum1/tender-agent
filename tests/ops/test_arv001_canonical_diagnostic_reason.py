@@ -31,3 +31,30 @@ def test_arbitrary_private_text_is_not_preserved() -> None:
 
     assert result == "runtime_start_failed"
     assert "/private/secret/path" not in result
+
+
+def test_child_reason_with_filename_is_preserved() -> None:
+    stderr = "required_intake_artifact_missing_or_unsafe:metadata.json\n"
+
+    assert (
+        diagnostic.canonical_safe_child_failure(stderr)
+        == "required_intake_artifact_missing_or_unsafe:metadata.json"
+    )
+
+
+def test_child_reason_survives_trailing_noise() -> None:
+    stderr = (
+        "arv001_unexpected_exception:application_data:integrityerror\n"
+        "warning\n"
+    )
+
+    assert (
+        diagnostic.canonical_safe_child_failure(stderr)
+        == "arv001_unexpected_exception:application_data:integrityerror"
+    )
+
+
+def test_child_private_path_is_redacted() -> None:
+    stderr = "/private/secret/path\nwarning\n"
+
+    assert diagnostic.canonical_safe_child_failure(stderr) == "application_persistence_failed"
