@@ -29,6 +29,62 @@ class CustomerRunInputs:
     limitations: list[str]
 
 
+def _reconstruct_persisted_document_text(chunks: list[Any]) -> str:
+    """Rebuild document text from persisted overlapping chunks without duplication.
+
+    Persisted ARV-001 chunks carry source ``char_start``/``char_end`` offsets and
+    intentionally overlap.  Joining them with separators duplicates every overlap
+    and can corrupt structured XML/table text used by deterministic report
+    extraction.  When complete offset metadata is available, reconstruct the
+    source character coordinate space instead.  Whitespace trimmed at chunk
+    boundaries is represented by spaces; non-whitespace overlap conflicts fail
+    closed.  Legacy rows without usable offsets keep the historical join path.
+    """
+
+    text_chunks = [chunk for chunk in chunks if getattr(chunk, "text", None)]
+    if not text_chunks:
+        return ""
+
+    positioned: list[tuple[int, int, str, int]] = []
+    for chunk in text_chunks:
+        text = str(chunk.text)
+        start = getattr(chunk, "char_start", None)
+        end = getattr(chunk, "char_end", None)
+        index = getattr(chunk, "chunk_index", 0)
+        if (
+            not isinstance(start, int)
+            or isinstance(start, bool)
+            or not isinstance(end, int)
+            or isinstance(end, bool)
+            or start < 0
+            or end < start
+            or end - start != len(text)
+        ):
+            return "\n\n".join(str(item.text) for item in text_chunks)
+        positioned.append((start, end, text, int(index or 0)))
+
+    positioned.sort(key=lambda item: (item[0], item[1], item[3]))
+    max_end = max(end for _start, end, _text, _index in positioned)
+    slots: list[str | None] = [None] * max_end
+    for start, end, text, _index in positioned:
+        for offset, char in enumerate(text):
+            position = start + offset
+            existing = slots[position]
+            if existing is not None and existing != char:
+                raise HTTPException(
+                    409,
+                    "Persisted procurement intake chunks overlap inconsistently",
+                )
+            slots[position] = char
+        if start + len(text) != end:  # Defensive invariant for future chunk types.
+            raise HTTPException(409, "Persisted procurement intake chunk offsets are invalid")
+
+    # ``_fixed_chunks`` trims only boundary whitespace before persisting source
+    # offsets.  Filling those coordinate gaps with spaces preserves token/markup
+    # separation without inventing procurement content.
+    return "".join(char if char is not None else " " for char in slots)
+
+
 def resolve_customer_run_inputs(
     session: Session, registry_number: str, *, _exact_tender: ProcurementTender | None = None
 ) -> CustomerRunInputs:
@@ -79,7 +135,7 @@ def resolve_customer_run_inputs(
                 ProcurementDocumentChunk.id.asc(),
             )
         ).all()
-        text = "\n\n".join(chunk.text for chunk in chunks if chunk.text)
+        text = _reconstruct_persisted_document_text(chunks)
         if not text:
             continue
         name = row.file_name
