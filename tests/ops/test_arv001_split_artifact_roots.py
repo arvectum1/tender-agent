@@ -36,6 +36,10 @@ def _frozen_corpus_sha(physical: list[dict]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _metadata_payload() -> dict:
+    return {"files": [{"original_name": "A.xml", "stored_name": "stored.xml"}]}
+
+
 def _write_artifacts(candidate: Path, intake: Path) -> dict[Path, tuple[int, str]]:
     candidate.mkdir()
     intake.mkdir()
@@ -61,10 +65,7 @@ def _write_artifacts(candidate: Path, intake: Path) -> dict[Path, tuple[int, str
             json.dumps(value, ensure_ascii=False), encoding="utf-8"
         )
     (intake / "metadata.json").write_text(
-        json.dumps(
-            {"files": [{"original_name": "A.xml", "stored_name": "stored.xml"}]},
-            ensure_ascii=False,
-        ),
+        json.dumps(_metadata_payload(), ensure_ascii=False),
         encoding="utf-8",
     )
     return {
@@ -99,6 +100,45 @@ def test_builds_byte_identical_ephemeral_view_without_source_mutation(
         assert (view / source.name).read_bytes() == source.read_bytes()
 
 
+def test_accepts_metadata_from_candidate_when_intake_contains_only_source_bytes(
+    tmp_path: Path,
+):
+    candidate = tmp_path / "candidate"
+    intake = tmp_path / "intake"
+    _write_artifacts(candidate, intake)
+    intake_metadata = intake / "metadata.json"
+    candidate_metadata = candidate / "metadata.json"
+    intake_metadata.replace(candidate_metadata)
+    view = tmp_path / "view"
+
+    summary = adapter.build_ephemeral_candidate_view(
+        candidate_root=candidate,
+        intake_root=intake,
+        view_root=view,
+    )
+
+    assert summary["artifact_count"] == 6
+    assert not intake_metadata.exists()
+    assert candidate_metadata.is_file()
+    assert (view / "metadata.json").read_bytes() == candidate_metadata.read_bytes()
+
+
+def test_accepts_identical_metadata_in_both_roots(tmp_path: Path):
+    candidate = tmp_path / "candidate"
+    intake = tmp_path / "intake"
+    _write_artifacts(candidate, intake)
+    candidate_metadata = candidate / "metadata.json"
+    candidate_metadata.write_bytes((intake / "metadata.json").read_bytes())
+
+    summary = adapter.build_ephemeral_candidate_view(
+        candidate_root=candidate,
+        intake_root=intake,
+        view_root=tmp_path / "view",
+    )
+
+    assert summary["artifact_count"] == 6
+
+
 def test_rejects_conflicting_metadata_in_candidate_and_intake_roots(tmp_path: Path):
     candidate = tmp_path / "candidate"
     intake = tmp_path / "intake"
@@ -108,6 +148,23 @@ def test_rejects_conflicting_metadata_in_candidate_and_intake_roots(tmp_path: Pa
     )
 
     with pytest.raises(AcceptanceBlocked, match="metadata_artifact_conflict"):
+        adapter.build_ephemeral_candidate_view(
+            candidate_root=candidate,
+            intake_root=intake,
+            view_root=tmp_path / "view",
+        )
+
+
+def test_rejects_when_metadata_is_missing_from_both_roots(tmp_path: Path):
+    candidate = tmp_path / "candidate"
+    intake = tmp_path / "intake"
+    _write_artifacts(candidate, intake)
+    (intake / "metadata.json").unlink()
+
+    with pytest.raises(
+        AcceptanceBlocked,
+        match="required_metadata_artifact_missing_or_unsafe:metadata.json",
+    ):
         adapter.build_ephemeral_candidate_view(
             candidate_root=candidate,
             intake_root=intake,

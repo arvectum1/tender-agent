@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run ARV-001 acceptance when summaries and intake metadata live separately."""
+"""Run ARV-001 acceptance when frozen summaries and source bytes live separately."""
 
 from __future__ import annotations
 
@@ -94,6 +94,42 @@ def _copy_verified(source: Path, destination: Path, code: str) -> tuple[int, str
     return before_size, before_hash
 
 
+def _metadata_source(candidate_root: Path, intake_root: Path) -> tuple[Path, str]:
+    """Resolve immutable metadata from either established split-root layout.
+
+    The real durable ARV-001 corpus keeps ``metadata.json`` with the frozen
+    candidate summaries while the normalized intake root contains source bytes.
+    Earlier split-root fixtures kept metadata beside intake. Support both layouts
+    without synthesizing or rewriting metadata, and fail closed if both copies
+    exist but are not byte-identical.
+    """
+
+    candidate = candidate_root / _METADATA_ARTIFACT
+    intake = intake_root / _METADATA_ARTIFACT
+    candidate_present = candidate.exists() or candidate.is_symlink()
+    intake_present = intake.exists() or intake.is_symlink()
+
+    if candidate_present:
+        _regular_source(candidate, "candidate_metadata_artifact_unsafe")
+    if intake_present:
+        _regular_source(
+            intake,
+            "required_intake_artifact_missing_or_unsafe:metadata.json",
+        )
+
+    if candidate_present and intake_present:
+        if candidate.stat().st_size != intake.stat().st_size or _sha256(candidate) != _sha256(
+            intake
+        ):
+            raise AcceptanceBlocked("metadata_artifact_conflict")
+        return candidate, "candidate_metadata_artifact_unsafe"
+    if candidate_present:
+        return candidate, "candidate_metadata_artifact_unsafe"
+    if intake_present:
+        return intake, "required_intake_artifact_missing_or_unsafe:metadata.json"
+    raise AcceptanceBlocked("required_metadata_artifact_missing_or_unsafe:metadata.json")
+
+
 def build_ephemeral_candidate_view(
     *, candidate_root: Path, intake_root: Path, view_root: Path
 ) -> dict[str, object]:
@@ -118,24 +154,11 @@ def build_ephemeral_candidate_view(
         )
         copied[name] = {"size_bytes": size, "sha256": digest}
 
-    metadata_source = intake_root / _METADATA_ARTIFACT
-    _regular_source(
-        metadata_source,
-        "required_intake_artifact_missing_or_unsafe:metadata.json",
-    )
-    candidate_metadata = candidate_root / _METADATA_ARTIFACT
-    if candidate_metadata.exists() or candidate_metadata.is_symlink():
-        _regular_source(candidate_metadata, "candidate_metadata_artifact_unsafe")
-        if (
-            candidate_metadata.stat().st_size != metadata_source.stat().st_size
-            or _sha256(candidate_metadata) != _sha256(metadata_source)
-        ):
-            raise AcceptanceBlocked("metadata_artifact_conflict")
-
+    metadata_source, metadata_error = _metadata_source(candidate_root, intake_root)
     size, digest = _copy_verified(
         metadata_source,
         view_root / _METADATA_ARTIFACT,
-        "required_intake_artifact_missing_or_unsafe:metadata.json",
+        metadata_error,
     )
     copied[_METADATA_ARTIFACT] = {"size_bytes": size, "sha256": digest}
 
