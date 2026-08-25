@@ -3,10 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
-
-import pytest
 
 from scripts.arv001 import run_outage_quality_acceptance_canonical_runtime as owner
 
@@ -57,7 +56,7 @@ def _request(root: Path) -> Path:
     return request_path
 
 
-def test_preflight_only_never_touches_ack_or_outage_runner(monkeypatch, capsys):
+def _patch_runtime(monkeypatch):
     monkeypatch.setattr(owner, "_repository_preflight", lambda _head: None)
     monkeypatch.setattr(
         owner,
@@ -69,22 +68,22 @@ def test_preflight_only_never_touches_ack_or_outage_runner(monkeypatch, capsys):
             {"binary_sha256": "b"},
         ),
     )
-    sentinel_runtime = object()
-    sentinel_context = object()
+
+    @contextmanager
+    def fake_verified_runtime(**_kwargs):
+        yield {"AI_CORP_LLM_MODEL": owner.EXPECTED_MODEL_ALIAS}
+
+    monkeypatch.setattr(owner, "_verified_runtime", fake_verified_runtime)
+
+
+def test_preflight_only_never_touches_ack_or_outage_runner(monkeypatch, capsys):
+    _patch_runtime(monkeypatch)
+
+    def forbidden_ack_call(_path):
+        raise AssertionError("preflight must not inspect or consume an acknowledgement")
+
     monkeypatch.setattr(
-        owner,
-        "_runtime_probe",
-        lambda **_kwargs: (
-            sentinel_runtime,
-            {"AI_CORP_LLM_MODEL": owner.EXPECTED_MODEL_ALIAS},
-            sentinel_context,
-        ),
-    )
-    closed = []
-    monkeypatch.setattr(
-        owner,
-        "_close_runtime_probe",
-        lambda runtime, context: closed.append((runtime, context)),
+        owner, "acknowledgement_consumption_marker", forbidden_ack_call
     )
 
     result = owner._preflight_only(
@@ -102,7 +101,6 @@ def test_preflight_only_never_touches_ack_or_outage_runner(monkeypatch, capsys):
     assert payload["provider_generation_calls"] == 0
     assert payload["acknowledgement_touched"] is False
     assert payload["outage_runner_invocations"] == 0
-    assert closed == [(sentinel_runtime, sentinel_context)]
 
 
 def test_launch_detaches_worker_from_foreground_caller(monkeypatch, tmp_path, capsys):
@@ -154,13 +152,16 @@ def test_launch_detaches_worker_from_foreground_caller(monkeypatch, tmp_path, ca
     )
 
     assert result == 0
-    assert captured["kwargs"]["stdin"] is owner.subprocess.DEVNULL
-    assert captured["kwargs"]["stdout"] is owner.subprocess.DEVNULL
-    assert captured["kwargs"]["stderr"] is owner.subprocess.DEVNULL
+    assert captured["kwargs"]["stdin"] == owner.subprocess.DEVNULL
+    assert captured["kwargs"]["stdout"] == owner.subprocess.DEVNULL
+    assert captured["kwargs"]["stderr"] == owner.subprocess.DEVNULL
     assert captured["kwargs"]["start_new_session"] is True
     assert captured["kwargs"]["close_fds"] is True
     assert "--worker" in captured["command"]
-    assert "scripts.arv001.run_outage_quality_acceptance_canonical_runtime" in captured["command"]
+    assert (
+        "scripts.arv001.run_outage_quality_acceptance_canonical_runtime"
+        in captured["command"]
+    )
     assert stat_mode(private_root) == 0o700
     assert stat_mode(private_root / owner._REQUEST_FILENAME) == 0o600
     output = json.loads(capsys.readouterr().out)
@@ -172,30 +173,7 @@ def test_worker_runs_outage_child_once_without_wrapper_timeout(monkeypatch, tmp_
     root = tmp_path / "execution"
     root.mkdir(mode=0o700)
     request_path = _request(root)
-
-    monkeypatch.setattr(owner, "_repository_preflight", lambda _head: None)
-    monkeypatch.setattr(
-        owner,
-        "_validate_runtime_assets",
-        lambda _gguf, _binary: (
-            Path("model.gguf"),
-            Path("llama-server"),
-            {"gguf_sha256": "g"},
-            {"binary_sha256": "b"},
-        ),
-    )
-    sentinel_runtime = object()
-    sentinel_context = object()
-    monkeypatch.setattr(
-        owner,
-        "_runtime_probe",
-        lambda **_kwargs: (
-            sentinel_runtime,
-            {"AI_CORP_LLM_MODEL": owner.EXPECTED_MODEL_ALIAS},
-            sentinel_context,
-        ),
-    )
-    monkeypatch.setattr(owner, "_close_runtime_probe", lambda *_args: None)
+    _patch_runtime(monkeypatch)
 
     calls = []
 
@@ -238,28 +216,7 @@ def test_worker_failure_is_terminal_and_not_retried(monkeypatch, tmp_path):
     root = tmp_path / "execution"
     root.mkdir(mode=0o700)
     request_path = _request(root)
-
-    monkeypatch.setattr(owner, "_repository_preflight", lambda _head: None)
-    monkeypatch.setattr(
-        owner,
-        "_validate_runtime_assets",
-        lambda _gguf, _binary: (
-            Path("model.gguf"),
-            Path("llama-server"),
-            {"gguf_sha256": "g"},
-            {"binary_sha256": "b"},
-        ),
-    )
-    monkeypatch.setattr(
-        owner,
-        "_runtime_probe",
-        lambda **_kwargs: (
-            object(),
-            {"AI_CORP_LLM_MODEL": owner.EXPECTED_MODEL_ALIAS},
-            object(),
-        ),
-    )
-    monkeypatch.setattr(owner, "_close_runtime_probe", lambda *_args: None)
+    _patch_runtime(monkeypatch)
 
     calls = []
 
