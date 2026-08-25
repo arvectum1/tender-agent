@@ -134,16 +134,6 @@ def test_pre_provider_boundary_creates_then_cleans_static_stage(
 ):
     _install_pre_stage_success(monkeypatch, tmp_path, execute=False, verify=True)
     called = {"application": False, "controlled": False}
-    monkeypatch.setattr(
-        runner,
-        "_corpus_hash_profile",
-        lambda: {
-            "sha256": runner._arguments().expected_corpus_sha,
-            "fields": ["original_name", "sha256", "size_bytes"],
-            "serialization": "canonical_compact_newline",
-            "ordering": "original_name_unicode_codepoint_ascending",
-        },
-    )
     monkeypatch.setattr(runner, "create_application_data", lambda **_kw: called.update(application=True))
     monkeypatch.setattr(runner, "_run_controlled_once", lambda *_args: called.update(controlled=True))
 
@@ -156,16 +146,25 @@ def test_pre_provider_boundary_creates_then_cleans_static_stage(
     assert called == {"application": False, "controlled": False}
 
 
-def test_direct_diagnostic_requires_bound_corpus_hash_profile(
+def test_direct_diagnostic_uses_resolved_bound_profile_without_stub(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ):
-    _install_pre_stage_success(monkeypatch, tmp_path, execute=False, verify=True)
-
-    assert runner.main() == 2
-    assert (
-        capsys.readouterr().err
-        == "diagnostic_bound_corpus_hash_profile_missing_or_invalid\n"
+    args = _install_pre_stage_success(monkeypatch, tmp_path, execute=False, verify=True)
+    monkeypatch.setattr(
+        runner,
+        "_corpus_hash_profile",
+        lambda: pytest.fail("direct diagnostic must not depend on the historical stub"),
     )
+
+    assert runner.main() == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["marker"] == "ARV-001_PRE_PROVIDER_STAGE_BOUNDARY_VERIFIED"
+    assert payload["corpus_hash_profile"] == {
+        "sha256": args.expected_corpus_sha,
+        "fields": ["original_name", "sha256", "size_bytes"],
+        "serialization": "canonical_compact_newline",
+        "ordering": "original_name_unicode_codepoint_ascending",
+    }
 
 
 def _bound_expected(physical: list[dict]) -> str:
