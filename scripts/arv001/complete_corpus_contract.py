@@ -201,9 +201,9 @@ def _matches_identity(path: Path, *, expected_sha256: str, expected_size_bytes: 
     try:
         if path.stat().st_size != expected_size_bytes:
             return False
+        return sha256_file(path) == expected_sha256
     except OSError:
         return False
-    return sha256_file(path) == expected_sha256
 
 
 def _resolve_regular_file(
@@ -236,12 +236,14 @@ def _resolve_regular_file(
     name_candidates = [direct] if direct.exists() else list(root.rglob(relative.name))
     if any(item.is_symlink() for item in name_candidates):
         raise AcceptanceBlocked("stored_file_symlink_forbidden")
+    regular_name_candidates = sorted(
+        {_inside_root(root, item) for item in name_candidates if item.is_file()}
+    )
     name_matches = sorted(
         {
-            _inside_root(root, item)
-            for item in name_candidates
-            if item.is_file()
-            and _matches_identity(
+            item
+            for item in regular_name_candidates
+            if _matches_identity(
                 item,
                 expected_sha256=expected_hash,
                 expected_size_bytes=expected_size_bytes,
@@ -268,6 +270,14 @@ def _resolve_regular_file(
     if len(unique) == 1:
         return unique[0]
     if len(unique) > 1:
+        raise AcceptanceBlocked("stored_file_mapping_not_unique")
+
+    # Preserve the historical observable failure contract when a unique named
+    # file exists but its bytes are wrong: return it so the caller raises the
+    # established source_file_sha256_mismatch / source_file_size_mismatch code.
+    if len(regular_name_candidates) == 1:
+        return regular_name_candidates[0]
+    if len(regular_name_candidates) > 1:
         raise AcceptanceBlocked("stored_file_mapping_not_unique")
     raise AcceptanceBlocked("stored_file_identity_not_found")
 
