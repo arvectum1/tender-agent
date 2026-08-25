@@ -632,8 +632,13 @@ def main() -> int:
             "source_file_mutations": 0,
         }
         if args.verify_pre_provider_stage_boundary:
+            resolved_profile = corpus_resolver.profile
+            if resolved_profile is None:
+                raise AcceptanceBlocked(
+                    "diagnostic_bound_corpus_hash_profile_missing_or_invalid"
+                )
             profile = _verified_diagnostic_bound_profile(
-                _corpus_hash_profile(), args.expected_corpus_sha
+                resolved_profile.sanitized(), args.expected_corpus_sha
             )
             current_phase = "stage_creation"
             final_root = paths["output_root"]
