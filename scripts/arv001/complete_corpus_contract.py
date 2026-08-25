@@ -182,22 +182,104 @@ def validate_document_set(values: dict[str, Any], expected_count: int) -> None:
         raise AcceptanceBlocked("logical_document_group_missing")
 
 
-def _resolve_regular_file(root: Path, stored_name: str) -> Path:
+def _safe_relative_name(stored_name: str) -> Path:
     relative = Path(stored_name)
     if relative.is_absolute() or ".." in relative.parts:
         raise AcceptanceBlocked("stored_name_unsafe")
-    direct = root / relative
-    candidates = [direct] if direct.exists() else list(root.rglob(relative.name))
-    candidates = [item for item in candidates if item.is_file()]
-    if any(item.is_symlink() for item in candidates):
-        raise AcceptanceBlocked("stored_file_symlink_forbidden")
-    unique = sorted({item.resolve() for item in candidates})
-    if len(unique) != 1:
-        raise AcceptanceBlocked("stored_file_mapping_not_unique")
-    path = unique[0]
-    if root.resolve() not in path.parents:
+    return relative
+
+
+def _inside_root(root: Path, path: Path) -> Path:
+    root_resolved = root.resolve()
+    resolved = path.resolve()
+    if root_resolved not in resolved.parents:
         raise AcceptanceBlocked("stored_file_outside_intake_root")
-    return path
+    return resolved
+
+
+def _matches_identity(path: Path, *, expected_sha256: str, expected_size_bytes: int) -> bool:
+    try:
+        if path.stat().st_size != expected_size_bytes:
+            return False
+        return sha256_file(path) == expected_sha256
+    except OSError:
+        return False
+
+
+def _resolve_regular_file(
+    root: Path,
+    stored_name: str,
+    *,
+    expected_sha256: str,
+    expected_size_bytes: int,
+) -> Path:
+    """Resolve one frozen source file by immutable identity, not intake filename.
+
+    EIS intake may normalize or prefix stored filenames while the frozen acceptance
+    descriptors retain the original EIS names. Filename lookup is therefore only
+    a fast path. The authoritative mapping is the already-frozen SHA-256 + byte
+    size pair. Ambiguous duplicate bytes still fail closed.
+    """
+
+    relative = _safe_relative_name(stored_name)
+    expected_hash = str(expected_sha256 or "").strip().lower()
+    if HASH_PATTERN.fullmatch(expected_hash) is None:
+        raise AcceptanceBlocked("source_file_identity_invalid")
+    if (
+        not isinstance(expected_size_bytes, int)
+        or isinstance(expected_size_bytes, bool)
+        or expected_size_bytes < 0
+    ):
+        raise AcceptanceBlocked("source_file_identity_invalid")
+
+    direct = root / relative
+    name_candidates = [direct] if direct.exists() else list(root.rglob(relative.name))
+    if any(item.is_symlink() for item in name_candidates):
+        raise AcceptanceBlocked("stored_file_symlink_forbidden")
+    regular_name_candidates = sorted(
+        {_inside_root(root, item) for item in name_candidates if item.is_file()}
+    )
+    name_matches = sorted(
+        {
+            item
+            for item in regular_name_candidates
+            if _matches_identity(
+                item,
+                expected_sha256=expected_hash,
+                expected_size_bytes=expected_size_bytes,
+            )
+        }
+    )
+    if len(name_matches) == 1:
+        return name_matches[0]
+    if len(name_matches) > 1:
+        raise AcceptanceBlocked("stored_file_mapping_not_unique")
+
+    identity_matches: set[Path] = set()
+    for item in root.rglob("*"):
+        if item.is_symlink() or not item.is_file():
+            continue
+        resolved = _inside_root(root, item)
+        if _matches_identity(
+            resolved,
+            expected_sha256=expected_hash,
+            expected_size_bytes=expected_size_bytes,
+        ):
+            identity_matches.add(resolved)
+    unique = sorted(identity_matches)
+    if len(unique) == 1:
+        return unique[0]
+    if len(unique) > 1:
+        raise AcceptanceBlocked("stored_file_mapping_not_unique")
+
+    # Preserve the historical observable failure contract when a unique named
+    # file exists but its bytes are wrong: return it so the caller raises the
+    # established source_file_sha256_mismatch / source_file_size_mismatch code.
+    if len(regular_name_candidates) == 1:
+        return regular_name_candidates[0]
+    if len(regular_name_candidates) > 1:
+        raise AcceptanceBlocked("stored_file_mapping_not_unique")
+    raise AcceptanceBlocked("stored_file_identity_not_found")
 
 
 def _fixed_chunks(text: str, *, size: int, overlap: int) -> tuple[ChunkDraft, ...]:
@@ -265,12 +347,22 @@ def prepare_documents(
         stored_name = str(metadata_item.get("stored_name") or "").strip()
         if not stored_name or stored_name in used_storage:
             raise AcceptanceBlocked("metadata_stored_name_invalid_or_duplicate")
-        path = _resolve_regular_file(intake_root, stored_name)
+        expected_hash = str(descriptor.get("sha256") or "").strip().lower()
+        try:
+            expected_size = int(descriptor.get("size_bytes"))
+        except (TypeError, ValueError) as exc:
+            raise AcceptanceBlocked("source_file_identity_invalid") from exc
+        path = _resolve_regular_file(
+            intake_root,
+            stored_name,
+            expected_sha256=expected_hash,
+            expected_size_bytes=expected_size,
+        )
         actual_hash = sha256_file(path)
         actual_size = path.stat().st_size
-        if actual_hash != str(descriptor.get("sha256") or "").lower():
+        if actual_hash != expected_hash:
             raise AcceptanceBlocked("source_file_sha256_mismatch")
-        if actual_size != int(descriptor.get("size_bytes") or -1):
+        if actual_size != expected_size:
             raise AcceptanceBlocked("source_file_size_mismatch")
         status, text = extract_text(str(path), max_chars=max_chars)
         if status != EXTRACTED_STATUS or not text.strip():
