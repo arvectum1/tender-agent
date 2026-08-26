@@ -51,7 +51,9 @@ def _seed(factory, *, reverse: bool):
             ProcurementDocumentChunk(
                 tender_id=selected.id, document_id=documents[0].id, chunk_index=1,
                 text="second specification chunk", text_hash="1" * 64,
-                char_start=20, char_end=46, token_estimate=4,
+                # This fixture intentionally models legacy sparse offsets so the
+                # resolver retains the historical separator-join compatibility path.
+                char_start=26, char_end=52, token_estimate=4,
                 source_file_name=documents[0].file_name,
             ),
             ProcurementDocumentChunk(
