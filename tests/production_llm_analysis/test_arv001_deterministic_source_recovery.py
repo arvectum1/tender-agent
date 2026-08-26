@@ -13,7 +13,7 @@ from src.tender_research.document_text_extractor import _extract_xml
 
 REGISTRY = "0388100001826000047"
 
-EIS_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
+EIS_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <epNotification xmlns="urn:arvectum:test:eis">
   <commonInfo>
     <purchaseNumber>0388100001826000047</purchaseNumber>
@@ -31,7 +31,7 @@ EIS_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
     </purchaseObject>
   </purchaseObjects>
 </epNotification>
-"""
+""".encode("utf-8")
 
 CONTRACT_TEXT = """
 Проект контракта.
