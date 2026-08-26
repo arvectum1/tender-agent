@@ -730,7 +730,6 @@ def parse_private_descriptor(
         "physical_document_count": 10,
         "logical_document_count": 6,
         "extracted_document_count": 10,
-        "chunk_count": 233,
         "controlled_preflight_invocations": 1,
         "controlled_provider_invocations": 0,
         "provider_generation_calls": 0,
@@ -742,6 +741,13 @@ def parse_private_descriptor(
             or value[field] != expected
         ):
             raise PreparedVerificationError("descriptor_count_invalid")
+    chunk_count = value["chunk_count"]
+    if (
+        not isinstance(chunk_count, int)
+        or isinstance(chunk_count, bool)
+        or chunk_count <= 0
+    ):
+        raise PreparedVerificationError("descriptor_count_invalid")
     for field in (
         "gate5_ready", "controlled_preflight_verified",
         "provider_results_absent", "generation_artifacts_absent",
@@ -763,7 +769,7 @@ def parse_private_descriptor(
         physical_document_count=value["physical_document_count"],
         logical_document_count=value["logical_document_count"],
         extracted_document_count=value["extracted_document_count"],
-        chunk_count=value["chunk_count"],
+        chunk_count=chunk_count,
         snapshot_id=value["snapshot_id"],
         snapshot_hash=value["snapshot_hash"],
         source_graph_id=value["source_graph_id"],
