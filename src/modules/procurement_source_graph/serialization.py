@@ -52,11 +52,26 @@ def provenance_records(model: CanonicalProcurementModel) -> list[ProvenanceRecor
     return records
 
 
+def _serialize_fragment(fragment: StructuredSourceFragment) -> dict[str, Any]:
+    """Return a JSON-native fragment projection without changing persisted bytes.
+
+    ``dataclasses.asdict`` preserves tuple fields as tuples. JSON encoding writes
+    those tuples as arrays, and decoding them yields lists, so the historical
+    in-memory graph could differ from its own persisted JSON representation.
+    Normalize the only tuple field at the serializer boundary so equality is
+    stable across a JSON round-trip while the emitted JSON remains unchanged.
+    """
+
+    payload = asdict(fragment)
+    payload["characteristics"] = list(fragment.characteristics)
+    return payload
+
+
 def serialize_graph(model: CanonicalProcurementModel, fragments: list[StructuredSourceFragment], graph_version: str) -> dict[str, Any]:
     return {
         "graph_version": graph_version,
         "production_model_hash": model.production_model_hash,
-        "structured_fragments": [asdict(fragment) for fragment in fragments],
+        "structured_fragments": [_serialize_fragment(fragment) for fragment in fragments],
         "parent_child_edges": [
             {"parent": fragment.parent_fragment_key, "child": fragment.fragment_key}
             for fragment in fragments if fragment.parent_fragment_key
