@@ -395,7 +395,6 @@ def _prepare_payload_error(payload: object, expected_head: str) -> str | None:
         "physical_file_count": 10,
         "logical_document_count": 6,
         "extracted_document_count": 10,
-        "prepared_chunk_count": 233,
         "post_persistence_gate5_ready": True,
         "controlled_preflight_invocations": 1,
         "controlled_provider_invocations": 0,
@@ -412,6 +411,12 @@ def _prepare_payload_error(payload: object, expected_head: str) -> str | None:
         or payload["mapped_file_count"] != 10
     ):
         return "child_mapped_file_count_invalid"
+    if (
+        not isinstance(payload["prepared_chunk_count"], int)
+        or isinstance(payload["prepared_chunk_count"], bool)
+        or payload["prepared_chunk_count"] <= 0
+    ):
+        return "child_prepared_chunk_count_invalid"
     return None
 
 
@@ -830,7 +835,7 @@ def main() -> int:
                             "logical_document_count": 6,
                             "mapped_file_count": 10,
                             "extracted_document_count": 10,
-                            "prepared_chunk_count": 233,
+                            "prepared_chunk_count": verification.chunk_count,
                             "post_persistence_gate5_ready": True,
                             "controlled_preflight_invocations": 1,
                             "controlled_provider_invocations": 0,
@@ -849,11 +854,17 @@ def main() -> int:
                         except (IndexError, json.JSONDecodeError):
                             raise RuntimeError("controlled_preflight_payload_invalid")
 
+                        payload_error = _prepare_payload_error(payload, args.expected_head)
+                        if payload_error is not None:
+                            raise RuntimeError(payload_error)
+
                         descriptor_data = parse_private_descriptor(
                             staging / "prepared-verification.json",
                             expected_head=args.expected_head,
                             expected_corpus_sha=args.expected_corpus_sha,
                         )
+                        if payload["prepared_chunk_count"] != descriptor_data.chunk_count:
+                            raise RuntimeError("child_prepared_chunk_count_invalid")
                         verification = _verify_prepared_database(
                             path=staging / "prepared.sqlite3",
                             descriptor=descriptor_data,
@@ -878,7 +889,7 @@ def main() -> int:
                         recorder.passed(phase)
 
                     counters = {"controlled_preflight_invocations": 1, "controlled_provider_invocations": 0, "provider_generation_calls": 0, "production_db_mutations": 0, "old_arv003_mutations": 0, "git_data_leaks": 0}
-                    acceptance = {"application_prepared": True, "post_persistence_gate5_ready": True, "controlled_preflight_only": True, "physical_file_count": 10, "logical_document_count": 6, "extracted_document_count": 10, "prepared_chunk_count": 233, "raw_byte_replay": raw_mode, "attested_prepared_snapshot_replay": snapshot_mode}
+                    acceptance = {"application_prepared": True, "post_persistence_gate5_ready": True, "controlled_preflight_only": True, "physical_file_count": 10, "logical_document_count": 6, "extracted_document_count": 10, "prepared_chunk_count": verification.chunk_count, "raw_byte_replay": raw_mode, "attested_prepared_snapshot_replay": snapshot_mode}
 
                     if snapshot_mode and attestation:
                         acceptance.update({
