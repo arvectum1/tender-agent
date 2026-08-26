@@ -67,5 +67,9 @@ def install_llama_non_reasoning_mode() -> None:
     from src.modules.production_llm_analysis.openai_compatible import (
         enable_live_boundary_verification,
     )
+    from src.modules.production_llm_analysis.llama_wire_hardening import (
+        install_llama_wire_hardening,
+    )
 
     enable_live_boundary_verification()
+    install_llama_wire_hardening()
