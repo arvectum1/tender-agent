@@ -111,7 +111,6 @@ def _payload(*, fragment_id: str, value: str, quote: str, claim_id: str = _SERVE
                                     "claim_id": claim_id,
                                     "field_path": _ALLOWED_FIELD,
                                     "value": value,
-                                    "provider_confidence": 0.9,
                                     "evidence_references": [
                                         {
                                             "fragment_id": fragment_id,
