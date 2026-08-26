@@ -228,12 +228,22 @@ def _extract_html(content: bytes) -> str:
 
 
 def _extract_xml(content: bytes) -> str:
-    try:
-        text = content.decode("utf-8")
-    except UnicodeDecodeError:
-        text = content.decode("cp1251", errors="replace")
-    import re
+    """Return deterministic, parseable XML rather than destroying element names.
 
-    clean = re.sub(r"<[^>]+>", " ", text)
-    clean = re.sub(r"\s+", " ", clean).strip()
-    return clean[:500_000]
+    Downstream EIS metadata and purchase-object extractors are intentionally
+    namespace-agnostic but require the XML element structure.  The previous
+    plain-text projection stripped every tag, making authoritative EIS fields
+    such as ``maxPrice``, ``purchaseObject`` and ``OKPD2`` impossible to recover.
+    Parsing and re-serializing also rejects malformed XML instead of passing an
+    arbitrary tag-like string into structured extractors.
+    """
+
+    try:
+        root = ElementTree.fromstring(content)
+    except (ElementTree.ParseError, ValueError):
+        try:
+            text = _extract_txt(content)
+            root = ElementTree.fromstring(text)
+        except (ElementTree.ParseError, ValueError):
+            return ""
+    return ElementTree.tostring(root, encoding="unicode", method="xml")
