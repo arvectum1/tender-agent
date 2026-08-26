@@ -7,8 +7,10 @@ sanitized customer projection.
 
 from __future__ import annotations
 
+import hashlib
 import html
 import re
+import xml.etree.ElementTree as ET
 from typing import Any
 
 from src.modules.tender_operator_agent_demo import upload_service_legacy as _legacy
@@ -19,6 +21,12 @@ for _name, _value in vars(_legacy).items():
 
 _ORIGINAL_BUILD_PRELIMINARY_PROCUREMENT_ANALYSIS = (
     _legacy._build_preliminary_procurement_analysis
+)
+_ORIGINAL_EXTRACT_SUPPLY_ITEMS_FROM_NOTIFICATION_XML = (
+    _legacy._extract_supply_items_from_notification_xml
+)
+_ORIGINAL_ENRICH_PROCUREMENT_METADATA_FROM_DOCUMENTS = (
+    _legacy._enrich_procurement_metadata_from_documents
 )
 
 
@@ -48,6 +56,268 @@ def _liability_contract_highlight(contract_text: str) -> str | None:
     return None
 
 
+def _payment_contract_highlight(contract_text: str) -> str | None:
+    """Flag a source-backed payment section without inventing missing terms."""
+
+    normalized = " ".join(contract_text.lower().split())
+    if not normalized:
+        return None
+    grounded_markers = (
+        r"\b(?:условия|порядок)\s+оплат\w*",
+        r"\bзаказчик\s+(?:осуществляет|производит|перечисляет)\s+оплат\w*",
+        r"\bоплат\w*\s+(?:осуществляется|производится|перечисляется)",
+        r"\bоплат\w*\s+(?:после|в течение|по факту|на основании)",
+    )
+    if any(re.search(pattern, normalized, re.IGNORECASE) for pattern in grounded_markers):
+        return "Проект контракта содержит условия оплаты."
+    return None
+
+
+def _local_xml_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _xml_text(node: ET.Element | None) -> str:
+    if node is None:
+        return ""
+    return html.unescape(" ".join(part.strip() for part in node.itertext() if part.strip()))
+
+
+def _first_xml_descendant(node: ET.Element, names: set[str]) -> ET.Element | None:
+    lowered = {name.lower() for name in names}
+    return next(
+        (candidate for candidate in node.iter() if _local_xml_name(candidate.tag).lower() in lowered),
+        None,
+    )
+
+
+def _structured_okpd2(node: ET.Element) -> str | None:
+    direct = _first_xml_descendant(node, {"OKPDCode", "OKPD2Code", "okpdCode"})
+    if direct is not None:
+        value = _xml_text(direct).strip()
+        if re.fullmatch(r"\d{2}(?:\.\d{1,3}){1,4}", value):
+            return value
+    for candidate in node.iter():
+        if _local_xml_name(candidate.tag).lower() not in {"okpd2", "okpd2info", "okpd"}:
+            continue
+        code = _first_xml_descendant(candidate, {"OKPDCode", "OKPD2Code", "code"})
+        value = _xml_text(code).strip()
+        if re.fullmatch(r"\d{2}(?:\.\d{1,3}){1,4}", value):
+            return value
+    return None
+
+
+def _structured_ktru(node: ET.Element) -> str | None:
+    ktru = _first_xml_descendant(node, {"KTRU"})
+    if ktru is None:
+        return None
+    code = _first_xml_descendant(ktru, {"code", "KTRUCode"})
+    value = _xml_text(code).strip()
+    return value or None
+
+
+def _structured_purchase_object_name(node: ET.Element) -> tuple[str, str]:
+    for child in node:
+        if _local_xml_name(child.tag).lower() in {"name", "purchaseobjectinfo", "objectname", "productname"}:
+            value = _legacy._normalize_supply_name(_xml_text(child))
+            if value:
+                return value, f"purchaseObject/{_local_xml_name(child.tag)}"
+    for tag in ("purchaseObjectInfo", "objectName", "productName"):
+        candidate = _first_xml_descendant(node, {tag})
+        value = _legacy._normalize_supply_name(_xml_text(candidate))
+        if value:
+            return value, f"purchaseObject/{tag}"
+    ktru = _first_xml_descendant(node, {"KTRU"})
+    candidate = _first_xml_descendant(ktru, {"name"}) if ktru is not None else None
+    value = _legacy._normalize_supply_name(_xml_text(candidate))
+    return (value, "purchaseObject/KTRU/name") if value else ("", "")
+
+
+def _structured_quantity(node: ET.Element) -> str | None:
+    quantity = next(
+        (child for child in node if _local_xml_name(child.tag).lower() in {"quantity", "count", "amount"}),
+        None,
+    )
+    if quantity is None:
+        quantity = _first_xml_descendant(node, {"quantity", "count"})
+    if quantity is None:
+        return None
+    value_node = _first_xml_descendant(quantity, {"value", "concreteValue"})
+    raw = _xml_text(value_node or quantity)
+    return _legacy._normalize_quantity_value(raw) if re.search(r"\d", raw) else None
+
+
+def _structured_unit(node: ET.Element) -> str | None:
+    okei = _first_xml_descendant(node, {"OKEI", "manualUserOKEI"})
+    if okei is None:
+        return None
+    value = _xml_text(_first_xml_descendant(okei, {"nationalCode", "name"}))
+    return _legacy._normalize_supply_unit(value or None)
+
+
+def _extract_supply_items_from_notification_xml(text: str, source_document: str) -> list[Any]:
+    """Preserve legacy rows and recover source-backed EIS purchase-object fields.
+
+    The legacy parser remains authoritative where it succeeds.  This wrapper
+    enriches its rows with explicit OKPD2 and admits a structured purchaseObject
+    without a per-row price when name plus quantity/unit/OKPD2 are present.  A
+    contract-level NMCK is not a valid reason to discard the purchase object.
+    """
+
+    legacy_rows = list(_ORIGINAL_EXTRACT_SUPPLY_ITEMS_FROM_NOTIFICATION_XML(text, source_document))
+    if not text or "purchaseobject" not in text.lower():
+        return legacy_rows
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        return legacy_rows
+
+    objects = [node for node in root.iter() if _local_xml_name(node.tag).lower() == "purchaseobject"]
+    rows_by_number = {
+        int(row.source_row_number): row
+        for row in legacy_rows
+        if getattr(row, "source_row_number", None) is not None
+    }
+    recovered = list(legacy_rows)
+    for row_number, node in enumerate(objects, start=1):
+        okpd2 = _structured_okpd2(node)
+        ktru = _structured_ktru(node)
+        existing = rows_by_number.get(row_number)
+        if existing is not None:
+            if okpd2 and not getattr(existing, "okpd2", None):
+                existing.okpd2 = okpd2
+            if ktru and not getattr(existing, "ktru", None):
+                existing.ktru = ktru
+            continue
+
+        name, name_path = _structured_purchase_object_name(node)
+        quantity = _structured_quantity(node)
+        unit = _structured_unit(node)
+        if not name or not any((quantity, unit, okpd2, ktru)):
+            continue
+        type_node = _first_xml_descendant(node, {"type"})
+        item_type = "service" if _xml_text(type_node).upper() in {"SERVICE", "WORK"} else "goods"
+        price = _legacy._parse_float(_xml_text(_first_xml_descendant(node, {"price", "unitPrice"})))
+        total = _legacy._parse_float(_xml_text(_first_xml_descendant(node, {"sum", "totalPrice"})))
+        evidence_seed = f"{source_document}|notification-xml|{row_number}|{name}".encode("utf-8")
+        recovered.append(
+            SupplyItem(
+                item_no=None,
+                name=name,
+                quantity=quantity,
+                unit=unit,
+                characteristics=[],
+                gost=_legacy._extract_gost_tokens(_xml_text(node)),
+                equivalent_allowed=None,
+                source_document=source_document,
+                source_kind="notification_xml",
+                confidence="high",
+                raw_fragment=_xml_text(node),
+                unit_price=_legacy._format_decimal_price(price),
+                total_price=_legacy._format_decimal_price(total),
+                source_documents=[source_document],
+                item_type=item_type,
+                quantity_status="specified" if quantity is not None and unit else "not_specified",
+                pricing_basis="unit_price" if price is not None else "unknown",
+                source_row_number=row_number,
+                evidence_id=f"ev-{hashlib.sha256(evidence_seed).hexdigest()[:16]}",
+                unit_original=unit,
+                ktru=ktru,
+                okpd2=okpd2,
+                name_source_type="structured_direct_name",
+                name_source_path=name_path,
+                quantity_source_path="purchaseObject/quantity" if quantity is not None else None,
+                unit_source_path="purchaseObject/OKEI" if unit is not None else None,
+                extraction_strategy="notification_xml_purchase_object",
+            )
+        )
+    recovered.sort(key=lambda row: (getattr(row, "source_row_number", None) or 10**9, row.name.lower()))
+    return recovered
+
+
+def _enrich_procurement_metadata_from_documents(
+    metadata: dict[str, Any], **kwargs: Any
+) -> dict[str, Any]:
+    """Recover EIS structured metadata from preserved XML text for R10.1.
+
+    Uploaded-demo documents may still carry ``raw_content`` and are handled by
+    the legacy path first.  Persisted application inputs intentionally do not
+    retain raw bytes; for those, parse the deterministic XML text projection and
+    fill only fields that remain absent after the legacy enrichment.
+    """
+
+    enriched = _ORIGINAL_ENRICH_PROCUREMENT_METADATA_FROM_DOCUMENTS(metadata, **kwargs)
+    documents = list(kwargs.get("documents") or [])
+    if not documents:
+        return enriched
+
+    from src.modules.tender_operator_agent_demo.eis_notice_parser import (
+        apply_structured_metadata_to_procurement,
+        extract_notice_metadata,
+        merge_structured_metadata,
+    )
+
+    candidates: list[tuple[int, dict[str, Any]]] = []
+    for document in documents:
+        if str(getattr(document, "extension", "")).lower() != ".xml":
+            continue
+        text = str(getattr(document, "text", "") or "").strip()
+        if not text.startswith("<"):
+            continue
+        parsed = extract_notice_metadata(text)
+        if not parsed:
+            continue
+        score = sum(
+            1
+            for key in (
+                "nmck",
+                "okpd2_codes",
+                "procurement_subject",
+                "customer_name",
+                "submission_deadline",
+                "publication_date",
+            )
+            if parsed.get(key) not in (None, "", [])
+        )
+        if getattr(document, "role", "") == "notice":
+            score += 10
+        candidates.append((score, parsed))
+    if not candidates:
+        return enriched
+
+    _, notice_meta = max(candidates, key=lambda item: item[0])
+    structured = merge_structured_metadata(notice_meta, {}, {})
+    existing_procurement = (
+        dict(enriched.get("procurement"))
+        if isinstance(enriched.get("procurement"), dict)
+        else {}
+    )
+    candidate_procurement = dict(existing_procurement)
+    apply_structured_metadata_to_procurement(candidate_procurement, structured)
+    for key, value in candidate_procurement.items():
+        current = existing_procurement.get(key)
+        if current in (None, "", [], {}):
+            existing_procurement[key] = value
+    enriched["procurement"] = existing_procurement
+
+    root_map = {
+        "initial_price": "initial_price",
+        "okpd2_codes": "okpd2_codes",
+        "customer_name": "customer_name",
+        "customer_inn": "customer_inn",
+        "customer_kpp": "customer_kpp",
+        "delivery_place": "delivery_place",
+        "publication_date": "publication_date",
+        "deadline": "deadline",
+        "procedure_type": "procedure_type",
+    }
+    for procurement_key, root_key in root_map.items():
+        value = existing_procurement.get(procurement_key)
+        if enriched.get(root_key) in (None, "", [], {}) and value not in (None, "", [], {}):
+            enriched[root_key] = value
+    return enriched
+
+
 def _build_preliminary_procurement_analysis(**kwargs: Any) -> dict[str, Any]:
     """Preserve legacy extraction and enrich only the R10.1 customer path."""
 
@@ -57,19 +327,30 @@ def _build_preliminary_procurement_analysis(**kwargs: Any) -> dict[str, Any]:
         "production_llm_r10_1"
     ):
         return result
-    highlight = _liability_contract_highlight(
-        str(kwargs.get("contract_draft_text") or "")
-    )
-    if not highlight:
-        return result
+
+    contract_text = str(kwargs.get("contract_draft_text") or "")
     existing = [str(item) for item in result.get("contract_highlights", []) if item]
     normalized = {" ".join(item.lower().split()) for item in existing}
-    if " ".join(highlight.lower().split()) not in normalized:
-        existing.append(highlight)
+    for highlight in (
+        _payment_contract_highlight(contract_text),
+        _liability_contract_highlight(contract_text),
+    ):
+        if not highlight:
+            continue
+        key = " ".join(highlight.lower().split())
+        if key not in normalized:
+            existing.append(highlight)
+            normalized.add(key)
     result["contract_highlights"] = existing[:8]
     return result
 
 
+_legacy._extract_supply_items_from_notification_xml = (
+    _extract_supply_items_from_notification_xml
+)
+_legacy._enrich_procurement_metadata_from_documents = (
+    _enrich_procurement_metadata_from_documents
+)
 _legacy._build_preliminary_procurement_analysis = (
     _build_preliminary_procurement_analysis
 )

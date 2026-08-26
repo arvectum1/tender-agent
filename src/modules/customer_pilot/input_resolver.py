@@ -29,6 +29,63 @@ class CustomerRunInputs:
     limitations: list[str]
 
 
+def _legacy_join_chunks(chunks: list[Any]) -> str:
+    return "\n\n".join(chunk.text for chunk in chunks if chunk.text)
+
+
+def _reconstruct_persisted_document_text(chunks: list[Any]) -> str:
+    """Reconstruct the original extracted text from persisted chunk offsets.
+
+    Production chunks intentionally overlap for evidence retrieval.  Joining
+    their text with separators duplicates overlap and can corrupt structured
+    payloads such as EIS XML.  When a complete, internally consistent offset
+    projection is available, rebuild the exact character stream.  Legacy or
+    sparse fixtures that do not carry a usable contiguous projection retain the
+    historical join behavior.  Conflicting overlap is fail-closed because two
+    persisted chunks must never claim different bytes for the same source span.
+    """
+
+    values = [chunk for chunk in chunks if getattr(chunk, "text", None)]
+    if not values:
+        return ""
+
+    spans: list[tuple[int, int, str]] = []
+    for chunk in values:
+        text = str(chunk.text)
+        try:
+            start = int(chunk.char_start)
+            end = int(chunk.char_end)
+        except (TypeError, ValueError):
+            return _legacy_join_chunks(values)
+        if start < 0 or end <= start or end - start != len(text):
+            return _legacy_join_chunks(values)
+        spans.append((start, end, text))
+
+    spans.sort(key=lambda item: (item[0], item[1]))
+    if not spans or spans[0][0] != 0:
+        return _legacy_join_chunks(values)
+
+    result = spans[0][2]
+    cursor = spans[0][1]
+    for start, end, text in spans[1:]:
+        if start > cursor:
+            return _legacy_join_chunks(values)
+        overlap = cursor - start
+        if overlap > len(text):
+            # The new span is fully nested inside already reconstructed text.
+            existing = result[start:end]
+            if existing != text:
+                raise HTTPException(409, "Persisted document chunk overlap is inconsistent")
+            continue
+        if overlap and result[start:cursor] != text[:overlap]:
+            raise HTTPException(409, "Persisted document chunk overlap is inconsistent")
+        if end > cursor:
+            result += text[overlap:]
+            cursor = end
+
+    return result
+
+
 def resolve_customer_run_inputs(
     session: Session, registry_number: str, *, _exact_tender: ProcurementTender | None = None
 ) -> CustomerRunInputs:
@@ -79,7 +136,7 @@ def resolve_customer_run_inputs(
                 ProcurementDocumentChunk.id.asc(),
             )
         ).all()
-        text = "\n\n".join(chunk.text for chunk in chunks if chunk.text)
+        text = _reconstruct_persisted_document_text(chunks)
         if not text:
             continue
         name = row.file_name
