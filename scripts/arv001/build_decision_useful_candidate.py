@@ -17,7 +17,6 @@ import argparse
 import hashlib
 import json
 import os
-import re
 import shutil
 import tempfile
 from copy import deepcopy
@@ -135,7 +134,15 @@ def _document_role(kind: str | None, name: str) -> str:
         )
     ):
         return "contract_performance_security"
-    if any(token in value for token in ("contract_draft", "draft_contract", "проект контракта", "проект договора")):
+    if any(
+        token in value
+        for token in (
+            "contract_draft",
+            "draft_contract",
+            "проект контракта",
+            "проект договора",
+        )
+    ):
         return "contract_draft"
     if any(
         token in value
@@ -176,43 +183,64 @@ def _requirement_identity(row: dict[str, Any]) -> tuple[str, str, str]:
 
 def _is_generic_technical_requirement(row: dict[str, Any]) -> bool:
     text = " ".join(
-        str(row.get(key) or "") for key in ("title", "detail", "requirement", "name")
+        str(row.get(key) or "")
+        for key in ("title", "detail", "requirement", "name")
     ).casefold()
     return any(marker in text for marker in _GENERIC_TECHNICAL_MARKERS)
 
 
 def _exact_contract_highlights(analysis: dict[str, Any]) -> list[str]:
-    contract = analysis.get("contract") if isinstance(analysis.get("contract"), dict) else {}
-    values: list[str] = []
-    seen: set[str] = set()
-    for key in ("payment", "security", "acceptance", "liability", "termination"):
-        label = _CONTRACT_LABELS[key]
-        for row in contract.get(key) or []:
-            if not isinstance(row, dict) or not row.get("text"):
-                continue
-            text = " ".join(str(row["text"]).split())
-            source = " ".join(str(row.get("source") or "Проект контракта").split())
-            value = f"{label}: {text} Источник: {source}."
-            identity = value.casefold()
-            if identity not in seen:
-                seen.add(identity)
-                values.append(value)
-
+    contract = (
+        analysis.get("contract")
+        if isinstance(analysis.get("contract"), dict)
+        else {}
+    )
+    cap_values: list[str] = []
     cap_rows = contract.get("liability_cap") or []
     for row in cap_rows:
         if not isinstance(row, dict) or not row.get("text"):
             continue
-        source = " ".join(str(row.get("source") or "Проект контракта").split())
-        value = f"Лимит штрафов / cap: {' '.join(str(row['text']).split())} Источник: {source}."
-        if value.casefold() not in seen:
-            seen.add(value.casefold())
-            values.append(value)
-    if not cap_rows and contract.get("liability_cap_status") == "not_found_in_processed_contract_text":
-        values.append(
+        source = " ".join(
+            str(row.get("source") or "Проект контракта").split()
+        )
+        cap_values.append(
+            f"Лимит штрафов / cap: {' '.join(str(row['text']).split())} "
+            f"Источник: {source}."
+        )
+    if (
+        not cap_rows
+        and contract.get("liability_cap_status")
+        == "not_found_in_processed_contract_text"
+    ):
+        cap_values.append(
             "Лимит штрафов / cap: отдельное ограничение общей суммы штрафов "
             "не найдено в обработанном тексте проекта контракта."
         )
-    return values
+
+    values: list[str] = []
+    seen: set[str] = {value.casefold() for value in cap_values}
+    # Keep each semantic group bounded so one verbose contract section cannot
+    # crowd out other Product-Owner material terms. The cap is always first.
+    for key in ("payment", "security", "acceptance", "liability", "termination"):
+        label = _CONTRACT_LABELS[key]
+        accepted_in_group = 0
+        for row in contract.get(key) or []:
+            if not isinstance(row, dict) or not row.get("text"):
+                continue
+            text = " ".join(str(row["text"]).split())
+            source = " ".join(
+                str(row.get("source") or "Проект контракта").split()
+            )
+            value = f"{label}: {text} Источник: {source}."
+            identity = value.casefold()
+            if identity in seen:
+                continue
+            seen.add(identity)
+            values.append(value)
+            accepted_in_group += 1
+            if accepted_in_group >= 6:
+                break
+    return [*cap_values, *values]
 
 
 def derive_customer_model(
@@ -221,7 +249,11 @@ def derive_customer_model(
     """Return a derived report model while leaving accepted canonical bytes intact."""
 
     model = deepcopy(canonical_model)
-    technical = analysis.get("technical") if isinstance(analysis.get("technical"), dict) else {}
+    technical = (
+        analysis.get("technical")
+        if isinstance(analysis.get("technical"), dict)
+        else {}
+    )
     exact_technical = bool(
         technical.get("standards") or technical.get("specific_clauses")
     )
@@ -250,7 +282,9 @@ def derive_customer_model(
                     "title": "Конкретная характеристика из ТЗ",
                     "detail": str(row["text"]),
                     "type": "техническое требование",
-                    "source": str(row.get("source") or "Техническое задание"),
+                    "source": str(
+                        row.get("source") or "Техническое задание"
+                    ),
                 }
             )
     for row in analysis.get("application_requirements") or []:
@@ -278,15 +312,18 @@ def derive_customer_model(
         if isinstance(model.get("compatibility_sections"), dict)
         else {}
     )
+    exact_prefixes = tuple(
+        label.casefold() + ":" for label in _CONTRACT_LABELS.values()
+    ) + ("лимит штрафов / cap:",)
     previous = [
         str(value)
         for value in compatibility.get("contract_highlights", [])
         if value
-        and not any(marker in str(value).casefold() for marker in _GENERIC_CONTRACT_MARKERS)
-        and not str(value).casefold().startswith(
-            tuple(label.casefold() + ":" for label in _CONTRACT_LABELS.values())
-            + ("лимит штрафов / cap:",)
+        and not any(
+            marker in str(value).casefold()
+            for marker in _GENERIC_CONTRACT_MARKERS
         )
+        and not str(value).casefold().startswith(exact_prefixes)
     ]
     compatibility["contract_highlights"] = [
         *_exact_contract_highlights(analysis),
@@ -307,10 +344,14 @@ def render_decision_useful_report(
     _validate_customer_rework(rendered)
     validate_customer_report(rendered, expected_registry_number)
     lowered = rendered.casefold()
-    if any(marker.casefold() in lowered for marker in _FORBIDDEN_CUSTOMER_TEXT):
+    if any(
+        marker.casefold() in lowered for marker in _FORBIDDEN_CUSTOMER_TEXT
+    ):
         raise AcceptanceBlocked("decision_useful_internal_governance_exposed")
     if "проект контракта содержит условия оплаты." in lowered:
         raise AcceptanceBlocked("decision_useful_generic_payment_flag_survived")
+    if "лимит штрафов / cap:" not in lowered:
+        raise AcceptanceBlocked("decision_useful_liability_cap_not_rendered")
     return rendered
 
 
@@ -342,11 +383,27 @@ def _publish_candidate(
         )
         _write_file(
             staging / "decision-useful-analysis.json",
-            (json.dumps(analysis, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8"),
+            (
+                json.dumps(
+                    analysis,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    indent=2,
+                )
+                + "\n"
+            ).encode("utf-8"),
         )
         _write_file(
             staging / "candidate-manifest.json",
-            (json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8"),
+            (
+                json.dumps(
+                    manifest,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    indent=2,
+                )
+                + "\n"
+            ).encode("utf-8"),
         )
         os.replace(staging, output_root)
     finally:
@@ -364,22 +421,31 @@ def build_candidate(
     expected_corpus_sha: str = DEFAULT_CORPUS_SHA256,
     expected_canonical_sha: str = DEFAULT_ACCEPTED_CANONICAL_SHA256,
 ) -> dict[str, Any]:
-    canonical_output = canonical_output.expanduser().resolve(strict=True)
-    candidate_root = candidate_root.expanduser().resolve(strict=True)
-    intake_root = intake_root.expanduser().resolve(strict=True)
+    try:
+        canonical_output = canonical_output.expanduser().resolve(strict=True)
+        candidate_root = candidate_root.expanduser().resolve(strict=True)
+        intake_root = intake_root.expanduser().resolve(strict=True)
+    except OSError as exc:
+        raise AcceptanceBlocked("decision_useful_required_local_input_missing") from exc
     output_root = _outside_repo(
         output_root, "decision_useful_output_root_inside_repository"
     )
     if not candidate_root.is_dir() or not intake_root.is_dir():
         raise AcceptanceBlocked("decision_useful_frozen_source_root_missing")
 
-    canonical_model, canonical_file_sha = _read_canonical_report(canonical_output)
+    canonical_model, canonical_file_sha = _read_canonical_report(
+        canonical_output
+    )
     if canonical_file_sha != expected_canonical_sha:
-        raise AcceptanceBlocked("decision_useful_accepted_canonical_sha_mismatch")
+        raise AcceptanceBlocked(
+            "decision_useful_accepted_canonical_sha_mismatch"
+        )
     canonical_bytes_before = canonical_output.read_bytes()
     canonical_model_before = _canonical_json_bytes(canonical_model)
 
-    with tempfile.TemporaryDirectory(prefix="arv001-decision-useful-view-") as directory:
+    with tempfile.TemporaryDirectory(
+        prefix="arv001-decision-useful-view-"
+    ) as directory:
         view_root = Path(directory) / "candidate"
         build_ephemeral_candidate_view(
             candidate_root=candidate_root,
@@ -394,7 +460,9 @@ def build_candidate(
             or len(physical) != 10
             or any(not isinstance(item, dict) for item in physical)
         ):
-            raise AcceptanceBlocked("decision_useful_physical_files_contract_invalid")
+            raise AcceptanceBlocked(
+                "decision_useful_physical_files_contract_invalid"
+            )
         profile = resolve_corpus_hash_profile(physical, expected_corpus_sha)
         if profile.sha256 != expected_corpus_sha:
             raise AcceptanceBlocked("decision_useful_corpus_sha_mismatch")
@@ -412,7 +480,9 @@ def build_candidate(
             chunk_overlap=settings.rag_chunk_overlap_chars,
         )
         if len(prepared) != 10:
-            raise AcceptanceBlocked("decision_useful_prepared_document_count_invalid")
+            raise AcceptanceBlocked(
+                "decision_useful_prepared_document_count_invalid"
+            )
         source_identity_before = {
             item.original_name: {
                 "sha256": item.sha256,
@@ -429,12 +499,14 @@ def build_candidate(
             blockers = gate.get("blockers") or []
             code = ",".join(str(item) for item in blockers[:12])
             raise AcceptanceBlocked(
-                "decision_usefulness_gate_failed:" + (code or "unknown")
+                "decision_usefulness_gate_failed:"
+                + (code or "unknown")
             )
 
         derived_model = derive_customer_model(canonical_model, analysis)
         html = render_decision_useful_report(
-            derived_model, expected_registry_number=expected_registry_number
+            derived_model,
+            expected_registry_number=expected_registry_number,
         )
 
         # Source bytes and accepted canonical evidence remain immutable.
@@ -448,14 +520,24 @@ def build_candidate(
         if source_identity_after != source_identity_before:
             raise AcceptanceBlocked("decision_useful_source_bytes_mutated")
         if canonical_output.read_bytes() != canonical_bytes_before:
-            raise AcceptanceBlocked("decision_useful_accepted_canonical_file_mutated")
+            raise AcceptanceBlocked(
+                "decision_useful_accepted_canonical_file_mutated"
+            )
         if _canonical_json_bytes(canonical_model) != canonical_model_before:
-            raise AcceptanceBlocked("decision_useful_accepted_canonical_model_mutated")
+            raise AcceptanceBlocked(
+                "decision_useful_accepted_canonical_model_mutated"
+            )
 
     report_sha = _sha256_bytes(html.encode("utf-8"))
-    analysis_bytes = json.dumps(
-        analysis, ensure_ascii=False, sort_keys=True, indent=2
-    ).encode("utf-8") + b"\n"
+    analysis_bytes = (
+        json.dumps(
+            analysis,
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        ).encode("utf-8")
+        + b"\n"
+    )
     manifest: dict[str, Any] = {
         "schema_version": "arv001-decision-useful-candidate-v1",
         "task": "ARV-001",
@@ -505,26 +587,72 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument(
         "--expected-registry-number", default=DEFAULT_REGISTRY_NUMBER
     )
-    parser.add_argument("--expected-corpus-sha", default=DEFAULT_CORPUS_SHA256)
     parser.add_argument(
-        "--expected-canonical-sha", default=DEFAULT_ACCEPTED_CANONICAL_SHA256
+        "--expected-corpus-sha", default=DEFAULT_CORPUS_SHA256
+    )
+    parser.add_argument(
+        "--expected-canonical-sha",
+        default=DEFAULT_ACCEPTED_CANONICAL_SHA256,
     )
     return parser.parse_args()
 
 
 def main() -> int:
-    args = _arguments()
-    candidate_root = args.candidate_root.expanduser().resolve()
-    intake_root = (args.intake_root or candidate_root).expanduser().resolve()
-    result = build_candidate(
-        canonical_output=args.canonical_output,
-        candidate_root=candidate_root,
-        intake_root=intake_root,
-        output_root=args.output_root,
-        expected_registry_number=args.expected_registry_number,
-        expected_corpus_sha=args.expected_corpus_sha,
-        expected_canonical_sha=args.expected_canonical_sha,
-    )
+    try:
+        args = _arguments()
+        candidate_root = args.candidate_root.expanduser().resolve()
+        intake_root = (
+            args.intake_root or candidate_root
+        ).expanduser().resolve()
+        result = build_candidate(
+            canonical_output=args.canonical_output,
+            candidate_root=candidate_root,
+            intake_root=intake_root,
+            output_root=args.output_root,
+            expected_registry_number=args.expected_registry_number,
+            expected_corpus_sha=args.expected_corpus_sha,
+            expected_canonical_sha=args.expected_canonical_sha,
+        )
+    except AcceptanceBlocked as exc:
+        code = str(exc)
+        if not code.isascii() or len(code) > 600:
+            code = "decision_useful_candidate_blocked"
+        print(
+            json.dumps(
+                {
+                    "status": "FAIL_CLOSED",
+                    "failure_code": code,
+                    "provider_calls_performed": False,
+                    "eis_requests_performed": False,
+                    "accepted_canonical_mutated": False,
+                    "product_owner": "REJECTED",
+                    "independent_review": "NOT_AUTHORIZED",
+                    "freeze": "NOT_ALLOWED",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 2
+    except OSError:
+        print(
+            json.dumps(
+                {
+                    "status": "FAIL_CLOSED",
+                    "failure_code": "decision_useful_local_io_failed",
+                    "provider_calls_performed": False,
+                    "eis_requests_performed": False,
+                    "accepted_canonical_mutated": False,
+                    "product_owner": "REJECTED",
+                    "independent_review": "NOT_AUTHORIZED",
+                    "freeze": "NOT_ALLOWED",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 2
+
     print(
         json.dumps(
             {
@@ -532,7 +660,9 @@ def main() -> int:
                 "marker": "ARV001_DECISION_USEFUL_CANDIDATE_READY",
                 "report_sha256": result["report_sha256"],
                 "material_detail_count": result["material_detail_count"],
-                "decision_usefulness_gate": result["decision_usefulness_gate"]["status"],
+                "decision_usefulness_gate": result[
+                    "decision_usefulness_gate"
+                ]["status"],
                 "provider_calls_performed": False,
                 "eis_requests_performed": False,
                 "accepted_canonical_mutated": False,
