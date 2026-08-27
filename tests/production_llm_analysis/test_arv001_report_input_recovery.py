@@ -14,7 +14,13 @@ def _sha(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
-def _write_candidate(root: Path, *, report: bytes, canonical: bytes) -> Path:
+def _write_candidate(
+    root: Path,
+    *,
+    report: bytes,
+    canonical: bytes,
+    policy_version: str = "arv001-local-provider-gemma4-it-qat-q4_0-v2",
+) -> Path:
     controlled = root / "controlled-evidence"
     execution = controlled / "execution-1"
     execution.mkdir(parents=True)
@@ -46,6 +52,12 @@ def _write_candidate(root: Path, *, report: bytes, canonical: bytes) -> Path:
 
     manifest = {
         "manifest_version": "r10.1-controlled-provider-evidence-v3",
+        "stable_identity": {
+            "provider": "openai_compatible",
+            "model": "arvectum-gemma4-12b-it-qat-q4_0",
+            "approval_policy_version": policy_version,
+            "batch_count": 14,
+        },
         "repeat_count": 2,
         "repeat_identity_verified": True,
         "executions": [summary(), summary()],
@@ -87,6 +99,26 @@ def test_rejects_candidate_when_human_report_is_not_byte_identical(
     )
     rejected = tmp_path / "upload-ready-report.html"
     rejected.write_bytes(b"<html>Product Owner rejected this one</html>")
+
+    with pytest.raises(
+        AcceptanceBlocked, match="accepted_controlled_evidence_not_found"
+    ):
+        recover_report_rework_input(
+            rejected_report=rejected,
+            search_roots=[tmp_path],
+        )
+
+
+def test_rejects_candidate_from_wrong_provider_policy(tmp_path: Path) -> None:
+    report = b"<html>same report but old policy</html>"
+    _write_candidate(
+        tmp_path / "candidate",
+        report=report,
+        canonical=b'{"canonical":"old-policy"}',
+        policy_version="arv001-old-policy-v1",
+    )
+    rejected = tmp_path / "upload-ready-report.html"
+    rejected.write_bytes(report)
 
     with pytest.raises(
         AcceptanceBlocked, match="accepted_controlled_evidence_not_found"
