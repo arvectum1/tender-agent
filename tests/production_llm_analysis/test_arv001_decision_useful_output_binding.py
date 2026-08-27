@@ -46,6 +46,30 @@ def test_liability_cap_is_explicitly_extracted() -> None:
     assert "не может превышать цену Контракта" in contract["liability_cap"][0]["text"]
 
 
+def test_security_can_be_recovered_from_notice_when_size_lives_there() -> None:
+    documents = [
+        _doc(
+            "notice",
+            "Извещение.xml",
+            "Размер обеспечения исполнения контракта составляет 5 % от цены контракта. "
+            "Обеспечение может быть предоставлено независимой гарантией или внесением денежных средств.",
+        ),
+        _doc(
+            "contract_performance_security",
+            "Реквизиты для обеспечения исполнения контракта.docx",
+            "Получатель: Заказчик. Расчетный счет указан в реквизитах.",
+        ),
+    ]
+    analysis = extract_decision_useful_analysis(documents)
+    security = "\n".join(row["text"] for row in analysis["contract"]["security"])
+    assert "5 %" in security
+    assert "независимой гарантией" in security
+    assert any(
+        row["source"] == "Извещение о закупке"
+        for row in analysis["contract"]["security"]
+    )
+
+
 def test_final_output_binding_uses_analysis_mode_argument_not_metadata(monkeypatch) -> None:
     outputs = {
         "requirements": {
