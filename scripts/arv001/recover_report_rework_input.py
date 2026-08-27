@@ -3,9 +3,10 @@
 
 The helper is read-only. It searches only caller-supplied roots for finalized
 controlled-evidence manifests, matches the exact accepted ARV-001 execution
-metrics, requires byte identity with the Product Owner-rejected report, and
-verifies the canonical report against the publication SHA recorded in the
-manifest. It performs no provider, EIS, database, Git, or network I/O.
+and provider-policy identity, requires byte identity with the Product Owner-
+rejected report, and verifies the canonical report against the publication
+SHA recorded in the manifest. It performs no provider, EIS, database, Git, or
+network I/O.
 """
 
 from __future__ import annotations
@@ -24,6 +25,9 @@ _MANIFEST_VERSION = "r10.1-controlled-provider-evidence-v3"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _EXPECTED_ACCEPTED_CLAIMS = 21
 _EXPECTED_BATCH_COUNT = 14
+_EXPECTED_PROVIDER = "openai_compatible"
+_EXPECTED_MODEL = "arvectum-gemma4-12b-it-qat-q4_0"
+_EXPECTED_POLICY_VERSION = "arv001-local-provider-gemma4-it-qat-q4_0-v2"
 
 
 def _sha256_file(path: Path) -> str:
@@ -65,6 +69,16 @@ def _execution_matches(value: Any) -> bool:
     )
 
 
+def _stable_identity_matches(value: Any) -> bool:
+    return bool(
+        isinstance(value, dict)
+        and value.get("provider") == _EXPECTED_PROVIDER
+        and value.get("model") == _EXPECTED_MODEL
+        and value.get("approval_policy_version") == _EXPECTED_POLICY_VERSION
+        and value.get("batch_count") == _EXPECTED_BATCH_COUNT
+    )
+
+
 def _candidate_from_manifest(
     manifest_path: Path, *, rejected_report_sha256: str
 ) -> dict[str, str] | None:
@@ -78,6 +92,7 @@ def _candidate_from_manifest(
         manifest.get("manifest_version") != _MANIFEST_VERSION
         or manifest.get("repeat_count") != 2
         or manifest.get("repeat_identity_verified") is not True
+        or not _stable_identity_matches(manifest.get("stable_identity"))
         or not isinstance(executions, list)
         or len(executions) != 2
         or not all(_execution_matches(item) for item in executions)
@@ -124,22 +139,27 @@ def _candidate_from_manifest(
 def recover_report_rework_input(
     *, rejected_report: Path, search_roots: list[Path]
 ) -> dict[str, str]:
-    rejected = rejected_report.expanduser().resolve()
-    if rejected.is_symlink() or not rejected.is_file():
+    rejected_raw = rejected_report.expanduser()
+    if rejected_raw.is_symlink() or not rejected_raw.is_file():
         raise AcceptanceBlocked("rejected_report_not_found")
+    rejected = rejected_raw.resolve()
     if not search_roots:
         raise AcceptanceBlocked("recovery_search_roots_missing")
     rejected_sha = _sha256_file(rejected)
 
-    manifests: set[Path] = set()
+    manifests: dict[str, Path] = {}
     for raw_root in search_roots:
-        root = raw_root.expanduser().resolve()
-        if not root.is_dir() or root.is_symlink():
+        expanded = raw_root.expanduser()
+        if expanded.is_symlink() or not expanded.is_dir():
             continue
-        manifests.update(path.resolve() for path in root.rglob(_MANIFEST_NAME))
+        root = expanded.resolve()
+        for path in root.rglob(_MANIFEST_NAME):
+            if path.is_symlink() or not path.is_file():
+                continue
+            manifests.setdefault(str(path.resolve()), path)
 
     matches: list[dict[str, str]] = []
-    for manifest_path in sorted(manifests, key=str):
+    for manifest_path in sorted(manifests.values(), key=lambda item: str(item.resolve())):
         candidate = _candidate_from_manifest(
             manifest_path, rejected_report_sha256=rejected_sha
         )
@@ -159,7 +179,10 @@ def _arguments() -> argparse.Namespace:
     )
     parser.add_argument("--rejected-report", type=Path, required=True)
     parser.add_argument(
-        "--search-root", type=Path, action="append", required=True,
+        "--search-root",
+        type=Path,
+        action="append",
+        required=True,
         help="Root to scan recursively; repeat for multiple private roots.",
     )
     return parser.parse_args()
