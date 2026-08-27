@@ -79,6 +79,38 @@ def test_persisted_chunk_reconstruction_fails_closed_on_conflicting_overlap() ->
         _reconstruct_persisted_document_text(chunks)
 
 
+@pytest.mark.parametrize(
+    "clause",
+    [
+        "Срок оплаты составляет 7 рабочих дней с даты приемки товара.",
+        "Товар оплачивается Заказчиком в течение 7 рабочих дней после приемки.",
+        "Расчет с Поставщиком осуществляется Заказчиком в течение 7 рабочих дней.",
+        "Расчеты между Заказчиком и Поставщиком производятся после приемки товара.",
+        "Расчет за поставленный товар производится после подписания документа о приемке.",
+        "Денежные средства перечисляются на расчетный счет Поставщика после приемки.",
+        "Перечисление денежных средств производится в течение 7 рабочих дней.",
+    ],
+)
+def test_payment_contract_highlight_recognizes_grounded_settlement_wording(
+    clause: str,
+) -> None:
+    assert upload_service._payment_contract_highlight(clause) == (
+        "Проект контракта содержит условия оплаты."
+    )
+
+
+@pytest.mark.parametrize(
+    "clause",
+    [
+        "Расчет цены контракта выполнен методом сопоставимых рыночных цен.",
+        "Расчет штрафа производится от цены контракта.",
+        "Поставщик представляет расчет стоимости товара в составе заявки.",
+    ],
+)
+def test_payment_contract_highlight_rejects_non_payment_calculations(clause: str) -> None:
+    assert upload_service._payment_contract_highlight(clause) is None
+
+
 def _documents() -> list[AnalyzedDocument]:
     xml_text = _extract_xml(EIS_XML)
     return [
