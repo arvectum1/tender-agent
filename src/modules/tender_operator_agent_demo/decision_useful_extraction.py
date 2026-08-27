@@ -1,13 +1,13 @@
 """Decision-useful, source-bound extraction for customer procurement reports.
 
-The existing R10.1 controlled LLM path is deliberately conservative, but its
-legacy compatibility layer historically collapsed material contract clauses to
-presence flags (for example, "the contract contains payment terms").  This
-module preserves concrete source clauses from already-extracted procurement
-documents so the customer report can show the actual commercial mechanics.
+The controlled R10.1 path is deliberately conservative, but a procurement
+report is not useful when material clauses are collapsed to presence flags such
+as "the contract contains payment terms".  This module preserves concrete
+source clauses from already-extracted procurement documents so the customer
+report can expose the actual technical and commercial mechanics.
 
-No inference is performed here.  Returned values are normalized excerpts from
-source text plus deterministic source/offset locators.  If a specific term is
+No inference is performed here. Returned values are normalized excerpts from
+source text plus deterministic source/offset locators. If a specific term is
 not present in the processed text, the corresponding list remains empty.
 """
 
@@ -17,9 +17,9 @@ import re
 from typing import Any, Iterable
 
 _MAX_CLAUSE_CHARS = 1100
-_MAX_TECHNICAL_CLAUSES = 10
-_MAX_CONTRACT_CLAUSES = 8
-_MAX_APPLICATION_CLAUSES = 12
+_MAX_TECHNICAL_CLAUSES = 14
+_MAX_CONTRACT_CLAUSES = 12
+_MAX_APPLICATION_CLAUSES = 16
 
 _GOST_RE = re.compile(
     r"\bГОСТ(?:\s+Р)?\s+\d[\d.\-/–—]*(?:-\d{2,4})?\b",
@@ -30,40 +30,62 @@ _TU_RE = re.compile(r"\bТУ\s+\d[\d.\-/–—]+\b", re.IGNORECASE)
 
 _TECHNICAL_MARKERS = re.compile(
     r"\b(?:ГОСТ|ТР\s*ТС|ТУ|класс|марка|сорт|тип|вид|зимн\w*|летн\w*|"
-    r"арктич\w*|экологическ\w*|евро\s*[-–]?\s*\d+|температур\w*|"
-    r"цетанов\w*|содержани\w*\s+сер\w*|плотност\w*|фракц\w*|"
-    r"вспышк\w*|вязкост\w*)\b",
+    r"арктич\w*|экологическ\w*|евро\s*[-–]?\s*\d+|К[2-5]\b|"
+    r"температур\w*|цетанов\w*|содержани\w*\s+сер\w*|плотност\w*|"
+    r"фракц\w*|вспышк\w*|вязкост\w*|массов\w*\s+дол\w*|"
+    r"предельн\w*\s+температур\w*)\b",
     re.IGNORECASE,
 )
 _PAYMENT_MARKERS = re.compile(
-    r"\b(?:оплат\w*|аванс\w*|предоплат\w*|постоплат\w*|расч[её]т\w*)\b",
+    r"\b(?:оплат\w*|аванс\w*|предоплат\w*|постоплат\w*|расч[её]т\w*|"
+    r"перечислени\w*\s+денежн\w*\s+средств\w*)\b",
     re.IGNORECASE,
 )
 _SECURITY_MARKERS = re.compile(
-    r"\bобеспечени\w*\s+исполнени\w*\s+(?:контракт\w*|договор\w*)\b",
+    r"\b(?:"
+    r"обеспечени\w*\s+исполнени\w*\s+(?:контракт\w*|договор\w*)|"
+    r"независим\w*\s+гарант\w*|банковск\w*\s+гарант\w*|"
+    r"внесени\w*\s+денежн\w*\s+средств\w*|"
+    r"денежн\w*\s+средств\w*\s+на\s+сч[её]т\w*|"
+    r"способ\w*\s+обеспечени\w*|срок\w*\s+действи\w*\s+гарант\w*"
+    r")\b",
     re.IGNORECASE,
 )
 _ACCEPTANCE_MARKERS = re.compile(
-    r"\b(?:при[её]мк\w*|документ\w*\s+о\s+при[её]мк\w*|акт\w*\s+при[её]мк\w*)\b",
+    r"\b(?:при[её]мк\w*|документ\w*\s+о\s+при[её]мк\w*|"
+    r"акт\w*\s+при[её]мк\w*|мотивированн\w*\s+отказ\w*|"
+    r"экспертиз\w*\s+(?:результат\w*|товар\w*|поставк\w*))\b",
     re.IGNORECASE,
 )
 _LIABILITY_MARKERS = re.compile(
-    r"\b(?:штраф\w*|пен(?:я|и|ей|ею)|неустойк\w*|ответственност\w*)\b",
+    r"\b(?:штраф\w*|пен(?:я|и|ей|ею)|неустойк\w*|ответственност\w*|"
+    r"ключев\w*\s+ставк\w*|одн\w*\s+тр[её]хсот\w*)\b",
     re.IGNORECASE,
 )
 _TERMINATION_MARKERS = re.compile(
-    r"\b(?:односторонн\w*\s+отказ\w*|расторжен\w*|отказ\w*\s+от\s+исполнени\w*)\b",
+    r"\b(?:односторонн\w*\s+отказ\w*|расторжен\w*|"
+    r"отказ\w*\s+от\s+исполнени\w*)\b",
     re.IGNORECASE,
 )
 _APPLICATION_MARKERS = re.compile(
-    r"\b(?:заявк\w*\s+(?:должн\w*\s+)?содерж\w*|состав\w*\s+заявк\w*|"
-    r"предостав\w*\s+(?:в\s+составе\s+)?заявк\w*|декларац\w*|лицензи\w*|"
-    r"свидетельств\w*|сертификат\w*|выписк\w*|СРО|аккредитац\w*)\b",
+    r"\b(?:"
+    r"заявк\w*\s+(?:должн\w*\s+)?содерж\w*|"
+    r"состав\w*\s+заявк\w*|"
+    r"предостав\w*\s+(?:в\s+составе\s+)?заявк\w*|"
+    r"участник\w*\s+(?:закупк\w*\s+)?(?:должен|должна|должно|предостав\w*)|"
+    r"документ\w*\s*,?\s*подтвержда\w*|"
+    r"информаци\w*\s+и\s+документ\w*|"
+    r"декларац\w*|лицензи\w*|свидетельств\w*|сертификат\w*|"
+    r"выписк\w*|СРО|аккредитац\w*|страна\w*\s+происхождени\w*|"
+    r"решени\w*\s+о\s+согласи\w*"
+    r")\b",
     re.IGNORECASE,
 )
 _SPECIFICITY_RE = re.compile(
     r"(?:\d|%|руб\w*|дн(?:ей|я)|рабоч\w*|календарн\w*|аванс\w*|"
-    r"постоплат\w*|банковск\w*|независим\w*\s+гарант\w*|ключев\w*\s+ставк\w*)",
+    r"постоплат\w*|банковск\w*|независим\w*\s+гарант\w*|"
+    r"денежн\w*\s+средств\w*|ключев\w*\s+ставк\w*|"
+    r"одн\w*\s+тр[её]хсот\w*)",
     re.IGNORECASE,
 )
 
@@ -88,7 +110,10 @@ def _public_source(document: Any) -> tuple[str, str]:
         )
     ):
         return "security", "Обеспечение исполнения контракта"
-    if any(token in haystack for token in ("contract_draft", "draft_contract", "контракт", "договор")):
+    if any(
+        token in haystack
+        for token in ("contract_draft", "draft_contract", "контракт", "договор")
+    ):
         return "contract", "Проект контракта"
     if any(
         token in haystack
@@ -116,20 +141,27 @@ def _boundary_before(text: str, start: int, radius: int = 520) -> int:
         text.rfind("; ", floor, start),
     ]
     boundary = max(candidates)
-    return boundary + (2 if boundary >= 0 and text[boundary : boundary + 2] in {". ", "; "} else 1) if boundary >= 0 else floor
+    if boundary < 0:
+        return floor
+    return boundary + (
+        2 if text[boundary : boundary + 2] in {". ", "; "} else 1
+    )
 
 
 def _boundary_after(text: str, end: int, radius: int = 900) -> int:
     ceiling = min(len(text), end + radius)
-    candidates = [value for value in (
-        text.find("\n", end, ceiling),
-        text.find(". ", end, ceiling),
-        text.find("; ", end, ceiling),
-    ) if value >= 0]
+    candidates = [
+        value
+        for value in (
+            text.find("\n", end, ceiling),
+            text.find(". ", end, ceiling),
+            text.find("; ", end, ceiling),
+        )
+        if value >= 0
+    ]
     if not candidates:
         return ceiling
-    boundary = min(candidates)
-    return boundary + 1
+    return min(candidates) + 1
 
 
 def _clauses(
@@ -158,7 +190,10 @@ def _clauses(
             {
                 "text": excerpt,
                 "source": source,
-                "locator": {"char_start": start, "char_end": min(end, start + _MAX_CLAUSE_CHARS)},
+                "locator": {
+                    "char_start": start,
+                    "char_end": min(end, start + _MAX_CLAUSE_CHARS),
+                },
             }
         )
         if len(results) >= limit:
@@ -180,7 +215,9 @@ def _standards(texts: Iterable[str]) -> list[str]:
     return values
 
 
-def _technical_specific_clauses(text: str, *, source: str) -> list[dict[str, Any]]:
+def _technical_specific_clauses(
+    text: str, *, source: str
+) -> list[dict[str, Any]]:
     rows = _clauses(
         text,
         _TECHNICAL_MARKERS,
@@ -190,7 +227,12 @@ def _technical_specific_clauses(text: str, *, source: str) -> list[dict[str, Any
     specific: list[dict[str, Any]] = []
     for row in rows:
         value = str(row["text"])
-        if not (_SPECIFICITY_RE.search(value) or _GOST_RE.search(value) or _TR_TS_RE.search(value) or _TU_RE.search(value)):
+        if not (
+            _SPECIFICITY_RE.search(value)
+            or _GOST_RE.search(value)
+            or _TR_TS_RE.search(value)
+            or _TU_RE.search(value)
+        ):
             continue
         specific.append(row)
         if len(specific) >= _MAX_TECHNICAL_CLAUSES:
@@ -222,23 +264,57 @@ def extract_decision_useful_analysis(documents: Iterable[Any]) -> dict[str, Any]
             technical_rows.extend(_technical_specific_clauses(text, source=source))
         if kind in {"contract", "security"}:
             contract_groups["payment"].extend(
-                _clauses(text, _PAYMENT_MARKERS, source=source, limit=_MAX_CONTRACT_CLAUSES, require_specificity=True)
+                _clauses(
+                    text,
+                    _PAYMENT_MARKERS,
+                    source=source,
+                    limit=_MAX_CONTRACT_CLAUSES,
+                    require_specificity=True,
+                )
             )
             contract_groups["security"].extend(
-                _clauses(text, _SECURITY_MARKERS, source=source, limit=_MAX_CONTRACT_CLAUSES, require_specificity=True)
+                _clauses(
+                    text,
+                    _SECURITY_MARKERS,
+                    source=source,
+                    limit=_MAX_CONTRACT_CLAUSES,
+                    require_specificity=True,
+                )
             )
             contract_groups["acceptance"].extend(
-                _clauses(text, _ACCEPTANCE_MARKERS, source=source, limit=_MAX_CONTRACT_CLAUSES, require_specificity=True)
+                _clauses(
+                    text,
+                    _ACCEPTANCE_MARKERS,
+                    source=source,
+                    limit=_MAX_CONTRACT_CLAUSES,
+                    require_specificity=True,
+                )
             )
             contract_groups["liability"].extend(
-                _clauses(text, _LIABILITY_MARKERS, source=source, limit=_MAX_CONTRACT_CLAUSES, require_specificity=True)
+                _clauses(
+                    text,
+                    _LIABILITY_MARKERS,
+                    source=source,
+                    limit=_MAX_CONTRACT_CLAUSES,
+                    require_specificity=True,
+                )
             )
             contract_groups["termination"].extend(
-                _clauses(text, _TERMINATION_MARKERS, source=source, limit=_MAX_CONTRACT_CLAUSES)
+                _clauses(
+                    text,
+                    _TERMINATION_MARKERS,
+                    source=source,
+                    limit=_MAX_CONTRACT_CLAUSES,
+                )
             )
         if kind == "application":
             application_rows.extend(
-                _clauses(text, _APPLICATION_MARKERS, source=source, limit=_MAX_APPLICATION_CLAUSES)
+                _clauses(
+                    text,
+                    _APPLICATION_MARKERS,
+                    source=source,
+                    limit=_MAX_APPLICATION_CLAUSES,
+                )
             )
 
     def dedupe(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
@@ -257,22 +333,37 @@ def extract_decision_useful_analysis(documents: Iterable[Any]) -> dict[str, Any]
     return {
         "technical": {
             "standards": _standards(standard_inputs),
-            "specific_clauses": dedupe(technical_rows, _MAX_TECHNICAL_CLAUSES),
+            "specific_clauses": dedupe(
+                technical_rows, _MAX_TECHNICAL_CLAUSES
+            ),
         },
         "contract": {
             key: dedupe(value, _MAX_CONTRACT_CLAUSES)
             for key, value in contract_groups.items()
         },
-        "application_requirements": dedupe(application_rows, _MAX_APPLICATION_CLAUSES),
+        "application_requirements": dedupe(
+            application_rows, _MAX_APPLICATION_CLAUSES
+        ),
     }
 
 
 def material_detail_count(value: dict[str, Any]) -> int:
     """Return a stable count used by report/quality tests."""
 
-    technical = value.get("technical") if isinstance(value.get("technical"), dict) else {}
-    contract = value.get("contract") if isinstance(value.get("contract"), dict) else {}
-    count = len(technical.get("standards") or []) + len(technical.get("specific_clauses") or [])
-    count += sum(len(contract.get(key) or []) for key in ("payment", "security", "acceptance", "liability", "termination"))
+    technical = (
+        value.get("technical")
+        if isinstance(value.get("technical"), dict)
+        else {}
+    )
+    contract = (
+        value.get("contract") if isinstance(value.get("contract"), dict) else {}
+    )
+    count = len(technical.get("standards") or []) + len(
+        technical.get("specific_clauses") or []
+    )
+    count += sum(
+        len(contract.get(key) or [])
+        for key in ("payment", "security", "acceptance", "liability", "termination")
+    )
     count += len(value.get("application_requirements") or [])
     return count
