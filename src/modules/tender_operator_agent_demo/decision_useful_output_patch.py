@@ -27,17 +27,20 @@ def _exact_contract_highlights(analysis: dict[str, Any]) -> list[str]:
     values = _runtime._contract_highlights(analysis)
     contract = analysis.get("contract") if isinstance(analysis.get("contract"), dict) else {}
     cap_rows = contract.get("liability_cap") or []
+    cap_values: list[str] = []
     for row in cap_rows:
         if not isinstance(row, dict) or not row.get("text"):
             continue
         source = str(row.get("source") or "Проект контракта")
-        values.append(f"Лимит штрафов / cap: {row['text']} Источник: {source}.")
+        cap_values.append(f"Лимит штрафов / cap: {row['text']} Источник: {source}.")
     if not cap_rows and any(contract.get(key) for key in ("liability", "payment", "acceptance", "security")):
-        values.append(
+        cap_values.append(
             "Лимит штрафов / cap: отдельное ограничение общей суммы штрафов не найдено "
             "в обработанном тексте проекта контракта."
         )
-    return values
+    # The cap is a Product-Owner material term. Keep it ahead of the bounded
+    # generic contract list so a long contract cannot silently truncate it.
+    return [*cap_values, *values[:24]]
 
 
 def _inject_exact_requirements(outputs: dict[str, Any], analysis: dict[str, Any]) -> None:
