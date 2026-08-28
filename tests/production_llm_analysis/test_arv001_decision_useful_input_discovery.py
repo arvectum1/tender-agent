@@ -8,11 +8,11 @@ from scripts.arv001.complete_corpus_contract import AcceptanceBlocked
 from scripts.arv001 import discover_decision_useful_inputs as discovery
 
 
-def _candidate(root: Path, name: str = "candidate") -> Path:
+def _candidate(root: Path, name: str = "candidate", marker: str = "{}") -> Path:
     value = root / name
     value.mkdir()
     for filename in discovery._REQUIRED_CANDIDATE_FILES:
-        (value / filename).write_text("{}", encoding="utf-8")
+        (value / filename).write_text(marker, encoding="utf-8")
     return value
 
 
@@ -60,20 +60,41 @@ def test_discovery_fails_closed_when_no_pair_matches(
         discovery.discover_inputs(search_roots=[tmp_path])
 
 
-def test_discovery_fails_closed_when_multiple_pairs_match(
+def test_equivalent_copies_are_deduped_and_narrowest_intake_wins(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     candidate = _candidate(tmp_path)
-    intake_a = tmp_path / "intake-a"
-    intake_b = tmp_path / "intake-b"
-    intake_a.mkdir()
-    intake_b.mkdir()
+    broad = tmp_path / "intake"
+    narrow = broad / "normalized"
+    narrow.mkdir(parents=True)
     monkeypatch.setattr(
         discovery,
         "_intake_candidates",
-        lambda _candidate, _roots: [intake_a, intake_b],
+        lambda _candidate, _roots: [broad, narrow],
     )
     monkeypatch.setattr(discovery, "_pair_is_valid", lambda *_args: True)
 
+    result = discovery.discover_inputs(search_roots=[tmp_path])
+    assert result["intake_root"] == str(narrow.resolve())
+    assert result["equivalent_pair_count"] == 2
+
+
+def test_discovery_fails_closed_for_distinct_candidate_baselines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate_a = _candidate(tmp_path, "candidate-a", marker="A")
+    candidate_b = _candidate(tmp_path, "candidate-b", marker="B")
+    intake = tmp_path / "intake"
+    intake.mkdir()
+    monkeypatch.setattr(
+        discovery,
+        "_intake_candidates",
+        lambda _candidate, _roots: [intake],
+    )
+    monkeypatch.setattr(discovery, "_pair_is_valid", lambda *_args: True)
+
+    assert discovery._candidate_signature(candidate_a) != discovery._candidate_signature(
+        candidate_b
+    )
     with pytest.raises(AcceptanceBlocked, match="frozen_input_pair_ambiguous"):
         discovery.discover_inputs(search_roots=[tmp_path])
