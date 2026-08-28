@@ -2,10 +2,10 @@
 """One-command local runner for the ARV-001 decision-useful PO candidate.
 
 The command discovers the already-existing frozen candidate/intake pair under a
-small private search scope, binds to the accepted canonical report, and delegates
-to the fail-closed zero-provider candidate builder. It is intentionally local:
-no provider, EIS, RAG, acknowledgement, acceptance, DB, or Git mutation is
-performed.
+small private search scope, proves all frozen source bytes through canonical
+preparation, binds to the accepted canonical report, and delegates to the
+fail-closed zero-provider candidate builder. It performs no provider, EIS, RAG,
+acknowledgement, acceptance, production DB, or Git mutation.
 """
 
 from __future__ import annotations
@@ -125,7 +125,13 @@ def main() -> int:
                 "frozen_corpus_sha256": result["frozen_corpus_sha256"],
                 "physical_document_count": result["physical_document_count"],
                 "logical_document_count": result["logical_document_count"],
-                "output_root": str(args.output_root.expanduser().resolve(strict=False)),
+                "source_bytes_verified": bool(discovery.get("source_bytes_verified")),
+                "verified_private_input_pairs": int(
+                    discovery.get("verified_pair_count") or 1
+                ),
+                "output_root": str(
+                    args.output_root.expanduser().resolve(strict=False)
+                ),
                 "provider_calls_performed": False,
                 "eis_requests_performed": False,
                 "rag_rerun": False,
