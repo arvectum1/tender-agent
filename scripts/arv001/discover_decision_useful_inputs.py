@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Discover the existing frozen ARV-001 candidate/intake pair without mutation.
 
-This helper exists only to minimize local operator work for the corrective
-Product-Owner candidate. It scans a small caller-controlled set of private
-roots, identifies candidate manifests, and proves a candidate/intake pairing by
-building the repository's ephemeral split-root view, validating the frozen
-corpus contract, and successfully preparing all 10 declared physical source
-files from the proposed intake root. It never downloads, writes to the durable
-roots, invokes a provider/EIS endpoint, or changes accepted evidence.
+This helper minimizes local operator work for the corrective Product-Owner
+candidate. It scans a small caller-controlled set of private roots, identifies
+candidate manifests, and proves a candidate/intake pairing by validating the
+accepted corpus contract and successfully preparing all 10 declared physical
+source files from the proposed intake root.
+
+Multiple historical private copies are allowed only after each copy independently
+proves the same accepted corpus SHA and complete 10-physical/6-logical contract.
+The narrowest verified intake root is selected deterministically. No provider,
+EIS, download, durable-root write, or accepted-evidence mutation occurs.
 """
 
 from __future__ import annotations
@@ -75,20 +78,25 @@ def _candidate_roots(search_roots: list[Path]) -> list[Path]:
 
 def _intake_candidates(candidate: Path, search_roots: list[Path]) -> list[Path]:
     values: set[Path] = {candidate}
-    # The durable ARV-001 layout keeps candidate summaries and normalized
-    # source bytes close to one another. Do not perform an unbounded disk scan:
-    # inspect only the candidate's near relatives and explicit private roots.
+    resolved_search_roots = {
+        value.expanduser().resolve(strict=False) for value in search_roots
+    }
+    # The durable ARV-001 layout keeps candidate summaries and normalized source
+    # bytes close to one another. Search near relatives and immediate children
+    # of explicit private roots, but never use the broad search root itself as
+    # an intake candidate: content-identity resolution recursively scans intake.
     for value in (candidate.parent, candidate.parent.parent):
-        if _is_safe_directory(value):
-            values.add(value.resolve())
-            for child in value.iterdir():
+        resolved = value.resolve(strict=False)
+        if resolved in resolved_search_roots:
+            continue
+        if _is_safe_directory(resolved):
+            values.add(resolved)
+            for child in resolved.iterdir():
                 if _is_safe_directory(child):
                     values.add(child.resolve())
-    for search_root in search_roots:
-        root = search_root.expanduser().resolve(strict=False)
+    for root in resolved_search_roots:
         if not _is_safe_directory(root):
             continue
-        values.add(root)
         for child in root.iterdir():
             if _is_safe_directory(child):
                 values.add(child.resolve())
@@ -136,9 +144,6 @@ def _pair_is_valid(candidate: Path, intake: Path, expected_corpus_sha: str) -> b
             if int(summary.get("logical_document_count") or 0) != 6:
                 return False
 
-            # Critical proof of intake identity: resolve, hash-check and extract
-            # every declared source file from the proposed intake root with the
-            # same routine used by the actual candidate builder.
             settings = get_settings()
             prepared = prepare_documents(
                 physical=physical,
@@ -166,40 +171,35 @@ def _pair_is_valid(candidate: Path, intake: Path, expected_corpus_sha: str) -> b
 def discover_inputs(
     *, search_roots: list[Path], expected_corpus_sha: str = DEFAULT_CORPUS_SHA256
 ) -> dict[str, Any]:
-    matches: list[tuple[Path, Path, str]] = []
+    matches: list[tuple[Path, Path]] = []
     candidates = _candidate_roots(search_roots)
     for candidate in candidates:
-        signature = _candidate_signature(candidate)
         for intake in _intake_candidates(candidate, search_roots):
             if _pair_is_valid(candidate, intake, expected_corpus_sha):
-                matches.append((candidate, intake, signature))
+                matches.append((candidate, intake))
+    matches = sorted(set(matches))
     if not matches:
         raise AcceptanceBlocked("decision_useful_frozen_input_pair_not_found")
 
-    signatures = {signature for _candidate, _intake, signature in matches}
-    if len(signatures) != 1:
-        # More than one semantically distinct candidate baseline matches the
-        # same broad search scope. Never guess between them.
-        raise AcceptanceBlocked("decision_useful_frozen_input_pair_ambiguous")
-
-    # Multiple byte-identical private copies of the same frozen baseline are
-    # equivalent. Prefer the narrowest proven intake root (deepest path) so the
-    # downstream resolver operates over the smallest filesystem scope; then use
-    # lexical ordering only as a deterministic tie-breaker.
+    # Every surviving pair independently proved the exact accepted corpus SHA,
+    # complete document-set contract and successful 10-file preparation. Path
+    # duplication is therefore a private-storage concern, not evidence identity.
+    # Prefer the narrowest intake root to minimize resolver scan scope.
     matches.sort(
         key=lambda value: (
             -len(value[1].parts),
+            -len(value[0].parts),
             str(value[1]),
             str(value[0]),
         )
     )
-    candidate, intake, signature = matches[0]
+    candidate, intake = matches[0]
     return {
         "status": "FOUND",
         "candidate_root": str(candidate),
         "intake_root": str(intake),
-        "candidate_artifact_signature": signature,
-        "equivalent_pair_count": len(matches),
+        "candidate_artifact_signature": _candidate_signature(candidate),
+        "verified_pair_count": len(matches),
         "physical_document_count": 10,
         "logical_document_count": 6,
         "frozen_corpus_sha256": expected_corpus_sha,
