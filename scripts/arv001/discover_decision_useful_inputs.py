@@ -1,0 +1,193 @@
+#!/usr/bin/env python3
+"""Discover the existing frozen ARV-001 candidate/intake pair without mutation.
+
+This helper exists only to minimize local operator work for the corrective
+Product-Owner candidate. It scans a small caller-controlled set of private
+roots, identifies candidate manifests, and proves a candidate/intake pairing by
+building the repository's ephemeral split-root view and validating the frozen
+corpus contract. It never downloads, copies into the durable roots, invokes a
+provider/EIS endpoint, or changes accepted evidence.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import tempfile
+from pathlib import Path
+from typing import Any
+
+from scripts.arv001.complete_corpus_contract import (
+    DEFAULT_CORPUS_SHA256,
+    AcceptanceBlocked,
+    load_candidate,
+    validate_document_set,
+)
+from scripts.arv001.corpus_hash_resolver import resolve_corpus_hash_profile
+from scripts.arv001.run_complete_corpus_acceptance_split_roots import (
+    build_ephemeral_candidate_view,
+)
+
+_REQUIRED_CANDIDATE_FILES = {
+    "physical-files.json",
+    "metadata.json",
+    "document-set-summary.json",
+}
+_MAX_DISCOVERED_DIRECTORIES = 3000
+
+
+def _is_safe_directory(path: Path) -> bool:
+    try:
+        return path.is_dir() and not path.is_symlink()
+    except OSError:
+        return False
+
+
+def _candidate_roots(search_roots: list[Path]) -> list[Path]:
+    found: set[Path] = set()
+    visited = 0
+    for search_root in search_roots:
+        root = search_root.expanduser().resolve(strict=False)
+        if not _is_safe_directory(root):
+            continue
+        for current, dirs, files in os.walk(root, followlinks=False):
+            visited += 1
+            if visited > _MAX_DISCOVERED_DIRECTORIES:
+                raise AcceptanceBlocked("decision_useful_discovery_scope_too_large")
+            dirs[:] = [
+                value
+                for value in dirs
+                if not (Path(current) / value).is_symlink()
+                and value not in {".git", "node_modules", ".venv", "venv"}
+            ]
+            if _REQUIRED_CANDIDATE_FILES.issubset(set(files)):
+                found.add(Path(current).resolve())
+    return sorted(found)
+
+
+def _intake_candidates(candidate: Path, search_roots: list[Path]) -> list[Path]:
+    values: set[Path] = {candidate}
+    # The durable layout used by ARV-001 commonly keeps metadata in a candidate
+    # root and source bytes in a sibling/nearby normalized intake tree. Search
+    # only nearby directories and explicit private search roots.
+    for value in (candidate.parent, candidate.parent.parent):
+        if _is_safe_directory(value):
+            values.add(value.resolve())
+            for child in value.iterdir():
+                if _is_safe_directory(child):
+                    values.add(child.resolve())
+    for search_root in search_roots:
+        root = search_root.expanduser().resolve(strict=False)
+        if not _is_safe_directory(root):
+            continue
+        values.add(root)
+        for child in root.iterdir():
+            if _is_safe_directory(child):
+                values.add(child.resolve())
+    return sorted(values)
+
+
+def _pair_is_valid(candidate: Path, intake: Path, expected_corpus_sha: str) -> bool:
+    try:
+        with tempfile.TemporaryDirectory(prefix="arv001-input-discovery-") as tmp:
+            view = Path(tmp) / "view"
+            build_ephemeral_candidate_view(
+                candidate_root=candidate,
+                intake_root=intake,
+                view_root=view,
+            )
+            values, _shapes = load_candidate(view)
+            physical = values.get("physical-files.json")
+            if not isinstance(physical, list) or len(physical) != 10:
+                return False
+            profile = resolve_corpus_hash_profile(physical, expected_corpus_sha)
+            if profile.sha256 != expected_corpus_sha:
+                return False
+            validate_document_set(values, 10)
+            summary = values.get("document-set-summary.json")
+            if not isinstance(summary, dict):
+                return False
+            if int(summary.get("logical_document_count") or 0) != 6:
+                return False
+            return True
+    except (AcceptanceBlocked, OSError, ValueError, KeyError, TypeError):
+        return False
+
+
+def discover_inputs(
+    *, search_roots: list[Path], expected_corpus_sha: str = DEFAULT_CORPUS_SHA256
+) -> dict[str, Any]:
+    matches: list[tuple[Path, Path]] = []
+    candidates = _candidate_roots(search_roots)
+    for candidate in candidates:
+        for intake in _intake_candidates(candidate, search_roots):
+            if _pair_is_valid(candidate, intake, expected_corpus_sha):
+                matches.append((candidate, intake))
+    # Deduplicate aliases after resolve().
+    matches = sorted(set(matches))
+    if not matches:
+        raise AcceptanceBlocked("decision_useful_frozen_input_pair_not_found")
+    if len(matches) != 1:
+        raise AcceptanceBlocked("decision_useful_frozen_input_pair_ambiguous")
+    candidate, intake = matches[0]
+    return {
+        "status": "FOUND",
+        "candidate_root": str(candidate),
+        "intake_root": str(intake),
+        "physical_document_count": 10,
+        "logical_document_count": 6,
+        "frozen_corpus_sha256": expected_corpus_sha,
+        "provider_calls_performed": False,
+        "eis_requests_performed": False,
+        "git_mutations": 0,
+    }
+
+
+def _args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--search-root",
+        action="append",
+        type=Path,
+        dest="search_roots",
+        help="Private root to scan. May be supplied more than once.",
+    )
+    parser.add_argument("--expected-corpus-sha", default=DEFAULT_CORPUS_SHA256)
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = _args()
+    search_roots = args.search_roots or [
+        Path("/private/tmp"),
+        Path.home() / ".local/share/arvectum/arv001",
+    ]
+    try:
+        result = discover_inputs(
+            search_roots=search_roots,
+            expected_corpus_sha=args.expected_corpus_sha,
+        )
+    except AcceptanceBlocked as exc:
+        code = str(exc)
+        if not code.isascii() or len(code) > 200:
+            code = "decision_useful_input_discovery_failed"
+        print(
+            json.dumps(
+                {
+                    "status": "FAIL_CLOSED",
+                    "failure_code": code,
+                    "provider_calls_performed": False,
+                    "eis_requests_performed": False,
+                    "git_mutations": 0,
+                },
+                sort_keys=True,
+            )
+        )
+        return 2
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
