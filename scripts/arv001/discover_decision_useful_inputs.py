@@ -13,6 +13,7 @@ roots, invokes a provider/EIS endpoint, or changes accepted evidence.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import tempfile
@@ -40,7 +41,7 @@ _REQUIRED_CANDIDATE_FILES = {
     "intake-summary.json",
     "metadata.json",
 }
-_MAX_DISCOVERED_DIRECTORIES = 3000
+_MAX_DISCOVERED_DIRECTORIES = 5000
 
 
 def _is_safe_directory(path: Path) -> bool:
@@ -94,6 +95,21 @@ def _intake_candidates(candidate: Path, search_roots: list[Path]) -> list[Path]:
     return sorted(values)
 
 
+def _candidate_signature(candidate: Path) -> str:
+    digest = hashlib.sha256()
+    for name in sorted(_REQUIRED_CANDIDATE_FILES):
+        path = candidate / name
+        if path.is_symlink() or not path.is_file():
+            raise AcceptanceBlocked("decision_useful_candidate_artifact_unsafe")
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        with path.open("rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
 def _pair_is_valid(candidate: Path, intake: Path, expected_corpus_sha: str) -> bool:
     try:
         with tempfile.TemporaryDirectory(prefix="arv001-input-discovery-") as tmp:
@@ -120,10 +136,9 @@ def _pair_is_valid(candidate: Path, intake: Path, expected_corpus_sha: str) -> b
             if int(summary.get("logical_document_count") or 0) != 6:
                 return False
 
-            # This is the critical proof of the intake root. The same canonical
-            # preparation routine used by the candidate builder must resolve,
-            # hash-check and extract every declared physical source file from
-            # this proposed root. A metadata-only match is not enough.
+            # Critical proof of intake identity: resolve, hash-check and extract
+            # every declared source file from the proposed intake root with the
+            # same routine used by the actual candidate builder.
             settings = get_settings()
             prepared = prepare_documents(
                 physical=physical,
@@ -151,22 +166,40 @@ def _pair_is_valid(candidate: Path, intake: Path, expected_corpus_sha: str) -> b
 def discover_inputs(
     *, search_roots: list[Path], expected_corpus_sha: str = DEFAULT_CORPUS_SHA256
 ) -> dict[str, Any]:
-    matches: list[tuple[Path, Path]] = []
+    matches: list[tuple[Path, Path, str]] = []
     candidates = _candidate_roots(search_roots)
     for candidate in candidates:
+        signature = _candidate_signature(candidate)
         for intake in _intake_candidates(candidate, search_roots):
             if _pair_is_valid(candidate, intake, expected_corpus_sha):
-                matches.append((candidate, intake))
-    matches = sorted(set(matches))
+                matches.append((candidate, intake, signature))
     if not matches:
         raise AcceptanceBlocked("decision_useful_frozen_input_pair_not_found")
-    if len(matches) != 1:
+
+    signatures = {signature for _candidate, _intake, signature in matches}
+    if len(signatures) != 1:
+        # More than one semantically distinct candidate baseline matches the
+        # same broad search scope. Never guess between them.
         raise AcceptanceBlocked("decision_useful_frozen_input_pair_ambiguous")
-    candidate, intake = matches[0]
+
+    # Multiple byte-identical private copies of the same frozen baseline are
+    # equivalent. Prefer the narrowest proven intake root (deepest path) so the
+    # downstream resolver operates over the smallest filesystem scope; then use
+    # lexical ordering only as a deterministic tie-breaker.
+    matches.sort(
+        key=lambda value: (
+            -len(value[1].parts),
+            str(value[1]),
+            str(value[0]),
+        )
+    )
+    candidate, intake, signature = matches[0]
     return {
         "status": "FOUND",
         "candidate_root": str(candidate),
         "intake_root": str(intake),
+        "candidate_artifact_signature": signature,
+        "equivalent_pair_count": len(matches),
         "physical_document_count": 10,
         "logical_document_count": 6,
         "frozen_corpus_sha256": expected_corpus_sha,
