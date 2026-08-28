@@ -4,9 +4,41 @@ import json
 from pathlib import Path
 
 from scripts.arv001 import run_decision_useful_candidate_local as runner
+from scripts.arv001.complete_corpus_contract import AcceptanceBlocked
 
 
-def test_local_runner_discovers_and_delegates_without_external_actions(
+def _args(output: Path, canonical: Path, search_root: Path):
+    return type(
+        "Args",
+        (),
+        {
+            "output_root": output,
+            "canonical_output": canonical,
+            "search_roots": [search_root],
+            "expected_registry_number": "0388100001826000047",
+            "expected_corpus_sha": "corpus",
+            "expected_canonical_sha": "canonical",
+        },
+    )()
+
+
+def _build_result() -> dict:
+    return {
+        "status": "decision_useful_candidate_for_product_owner_review",
+        "report_sha256": "report",
+        "material_detail_count": 12,
+        "decision_usefulness_gate": {
+            "status": "PASS",
+            "checks": {"payment_clause_count": 1},
+        },
+        "accepted_canonical_sha256": "canonical",
+        "frozen_corpus_sha256": "corpus",
+        "physical_document_count": 10,
+        "logical_document_count": 6,
+    }
+
+
+def test_local_runner_discovers_delegates_and_validates_without_external_actions(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
     canonical = tmp_path / "canonical.json"
@@ -17,28 +49,15 @@ def test_local_runner_discovers_and_delegates_without_external_actions(
     intake.mkdir()
     output = tmp_path / "output"
 
-    monkeypatch.setattr(
-        runner,
-        "_arguments",
-        lambda: type(
-            "Args",
-            (),
-            {
-                "output_root": output,
-                "canonical_output": canonical,
-                "search_roots": [tmp_path],
-                "expected_registry_number": "0388100001826000047",
-                "expected_corpus_sha": "corpus",
-                "expected_canonical_sha": "canonical",
-            },
-        )(),
-    )
+    monkeypatch.setattr(runner, "_arguments", lambda: _args(output, canonical, tmp_path))
     monkeypatch.setattr(
         runner,
         "discover_inputs",
         lambda **_kwargs: {
             "candidate_root": str(candidate),
             "intake_root": str(intake),
+            "source_bytes_verified": True,
+            "verified_pair_count": 2,
         },
     )
 
@@ -46,21 +65,19 @@ def test_local_runner_discovers_and_delegates_without_external_actions(
 
     def fake_build_candidate(**kwargs):
         captured.update(kwargs)
-        return {
-            "status": "decision_useful_candidate_for_product_owner_review",
-            "report_sha256": "report",
-            "material_detail_count": 12,
-            "decision_usefulness_gate": {
-                "status": "PASS",
-                "checks": {"payment_clause_count": 1},
-            },
-            "accepted_canonical_sha256": "canonical",
-            "frozen_corpus_sha256": "corpus",
-            "physical_document_count": 10,
-            "logical_document_count": 6,
-        }
+        output.mkdir()
+        return _build_result()
 
     monkeypatch.setattr(runner, "build_candidate", fake_build_candidate)
+    monkeypatch.setattr(
+        runner,
+        "_validate_published_candidate",
+        lambda _root: {
+            "status": "PASS",
+            "exact_standard_count": 1,
+            "contract_visible_counts": {"payment": 1},
+        },
+    )
 
     assert runner.main() == 0
     assert captured["canonical_output"] == canonical.resolve()
@@ -71,6 +88,9 @@ def test_local_runner_discovers_and_delegates_without_external_actions(
     result = json.loads(capsys.readouterr().out)
     assert result["marker"] == "ARV001_DECISION_USEFUL_LOCAL_CANDIDATE_READY"
     assert result["decision_usefulness_gate"] == "PASS"
+    assert result["rendered_material_validation"]["status"] == "PASS"
+    assert result["source_bytes_verified"] is True
+    assert result["verified_private_input_pairs"] == 2
     assert result["provider_calls_performed"] is False
     assert result["eis_requests_performed"] is False
     assert result["quality_acceptance_rerun"] is False
@@ -78,3 +98,46 @@ def test_local_runner_discovers_and_delegates_without_external_actions(
     assert result["product_owner"] == "REJECTED"
     assert result["independent_review"] == "NOT_AUTHORIZED"
     assert result["freeze"] == "NOT_ALLOWED"
+
+
+def test_local_runner_removes_just_created_candidate_when_render_validation_fails(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    canonical = tmp_path / "canonical.json"
+    canonical.write_text("{}", encoding="utf-8")
+    candidate = tmp_path / "candidate"
+    intake = tmp_path / "intake"
+    candidate.mkdir()
+    intake.mkdir()
+    output = tmp_path / "output"
+
+    monkeypatch.setattr(runner, "_arguments", lambda: _args(output, canonical, tmp_path))
+    monkeypatch.setattr(
+        runner,
+        "discover_inputs",
+        lambda **_kwargs: {
+            "candidate_root": str(candidate),
+            "intake_root": str(intake),
+        },
+    )
+
+    def fake_build_candidate(**_kwargs):
+        output.mkdir()
+        (output / "partial.txt").write_text("not a candidate", encoding="utf-8")
+        return _build_result()
+
+    monkeypatch.setattr(runner, "build_candidate", fake_build_candidate)
+    monkeypatch.setattr(
+        runner,
+        "_validate_published_candidate",
+        lambda _root: (_ for _ in ()).throw(
+            AcceptanceBlocked("decision_useful_rendered_payment_missing")
+        ),
+    )
+
+    assert runner.main() == 2
+    assert not output.exists()
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "FAIL_CLOSED"
+    assert result["failure_code"] == "decision_useful_rendered_payment_missing"
+    assert result["product_owner"] == "REJECTED"
