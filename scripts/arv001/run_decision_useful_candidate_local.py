@@ -4,14 +4,18 @@
 The command discovers the already-existing frozen candidate/intake pair under a
 small private search scope, proves all frozen source bytes through canonical
 preparation, binds to the accepted canonical report, and delegates to the
-fail-closed zero-provider candidate builder. It performs no provider, EIS, RAG,
-acknowledgement, acceptance, production DB, or Git mutation.
+fail-closed zero-provider candidate builder. It then verifies that the material
+terms which passed extraction are still visible in final customer HTML.
+
+It performs no provider, EIS, RAG, acknowledgement, acceptance, production DB,
+or Git mutation.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import shutil
 from pathlib import Path
 
 from scripts.arv001.build_decision_useful_candidate import (
@@ -24,6 +28,9 @@ from scripts.arv001.complete_corpus_contract import (
     AcceptanceBlocked,
 )
 from scripts.arv001.discover_decision_useful_inputs import discover_inputs
+from scripts.arv001.validate_decision_useful_candidate import (
+    validate_rendered_material_terms,
+)
 
 DEFAULT_CANONICAL_OUTPUT = Path(
     "/private/tmp/arv001-final-runtime-20260827065002/acceptance/"
@@ -82,6 +89,23 @@ def _failure(code: str) -> int:
     return 2
 
 
+def _validate_published_candidate(output_root: Path) -> dict:
+    html_path = output_root / "upload-ready-report-decision-useful.html"
+    analysis_path = output_root / "decision-useful-analysis.json"
+    if not html_path.is_file() or html_path.is_symlink():
+        raise AcceptanceBlocked("decision_useful_rendered_html_missing")
+    if not analysis_path.is_file() or analysis_path.is_symlink():
+        raise AcceptanceBlocked("decision_useful_rendered_analysis_missing")
+    try:
+        rendered = html_path.read_text(encoding="utf-8")
+        analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise AcceptanceBlocked("decision_useful_rendered_candidate_unreadable") from exc
+    if not isinstance(analysis, dict):
+        raise AcceptanceBlocked("decision_useful_rendered_analysis_invalid")
+    return validate_rendered_material_terms(rendered, analysis)
+
+
 def main() -> int:
     args = _arguments()
     search_roots = args.search_roots or [
@@ -108,6 +132,16 @@ def main() -> int:
     except OSError:
         return _failure("decision_useful_required_local_input_missing")
 
+    output_root = args.output_root.expanduser().resolve(strict=False)
+    try:
+        rendered_validation = _validate_published_candidate(output_root)
+    except AcceptanceBlocked as exc:
+        # A builder result that loses material detail during rendering is not a
+        # candidate. Remove only the just-created output root; frozen evidence
+        # and accepted canonical inputs remain read-only.
+        shutil.rmtree(output_root, ignore_errors=True)
+        return _failure(str(exc))
+
     print(
         json.dumps(
             {
@@ -121,6 +155,7 @@ def main() -> int:
                 "decision_usefulness_checks": result["decision_usefulness_gate"][
                     "checks"
                 ],
+                "rendered_material_validation": rendered_validation,
                 "canonical_sha256": result["accepted_canonical_sha256"],
                 "frozen_corpus_sha256": result["frozen_corpus_sha256"],
                 "physical_document_count": result["physical_document_count"],
@@ -129,9 +164,7 @@ def main() -> int:
                 "verified_private_input_pairs": int(
                     discovery.get("verified_pair_count") or 1
                 ),
-                "output_root": str(
-                    args.output_root.expanduser().resolve(strict=False)
-                ),
+                "output_root": str(output_root),
                 "provider_calls_performed": False,
                 "eis_requests_performed": False,
                 "rag_rerun": False,
