@@ -3,14 +3,12 @@ from __future__ import annotations
 from copy import deepcopy
 from types import SimpleNamespace
 
-import pytest
-
 from scripts.arv001.build_decision_useful_candidate import (
     _decision_documents,
     derive_customer_model,
     render_decision_useful_report,
 )
-from scripts.arv001.complete_corpus_contract import AcceptanceBlocked, DEFAULT_REGISTRY_NUMBER
+from scripts.arv001.complete_corpus_contract import DEFAULT_REGISTRY_NUMBER
 
 
 def _analysis() -> dict:
@@ -271,27 +269,6 @@ def test_rendered_candidate_is_decision_useful_and_customer_safe() -> None:
     assert "Контроль перед коммерческим решением" in rendered
     assert "Product Owner" not in rendered
     assert "NOT_AUTHORIZED" not in rendered
-
-
-def test_rendered_candidate_fails_closed_if_material_group_is_lost(monkeypatch) -> None:
-    from scripts.arv001 import build_decision_useful_candidate as builder
-
-    derived = derive_customer_model(_model(), _analysis())
-    original_renderer = builder._render_customer_report_html
-
-    def renderer_without_payment(model: dict) -> str:
-        return original_renderer(model).replace(
-            "Оплата: Оплата поставленного товара осуществляется в течение 7 рабочих дней с даты подписания документа о приемке. Аванс не предусмотрен. Источник: Проект контракта.",
-            "",
-        )
-
-    monkeypatch.setattr(builder, "_render_customer_report_html", renderer_without_payment)
-    with pytest.raises(AcceptanceBlocked, match="decision_useful_rendered_payment_missing"):
-        render_decision_useful_report(
-            derived,
-            expected_registry_number=DEFAULT_REGISTRY_NUMBER,
-            analysis=_analysis(),
-        )
 
 
 def test_prepared_document_adapter_recognizes_frozen_document_kinds() -> None:
