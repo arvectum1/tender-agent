@@ -47,6 +47,7 @@ def test_discovery_returns_only_unique_proven_pair(
     assert result["intake_root"] == str(intake.resolve())
     assert result["physical_document_count"] == 10
     assert result["logical_document_count"] == 6
+    assert result["source_bytes_verified"] is True
     assert result["provider_calls_performed"] is False
     assert result["eis_requests_performed"] is False
 
@@ -60,7 +61,7 @@ def test_discovery_fails_closed_when_no_pair_matches(
         discovery.discover_inputs(search_roots=[tmp_path])
 
 
-def test_equivalent_copies_are_deduped_and_narrowest_intake_wins(
+def test_verified_private_copies_choose_narrowest_intake(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     candidate = _candidate(tmp_path)
@@ -76,14 +77,16 @@ def test_equivalent_copies_are_deduped_and_narrowest_intake_wins(
 
     result = discovery.discover_inputs(search_roots=[tmp_path])
     assert result["intake_root"] == str(narrow.resolve())
-    assert result["equivalent_pair_count"] == 2
+    assert result["verified_pair_count"] == 2
 
 
-def test_discovery_fails_closed_for_distinct_candidate_baselines(
+def test_multiple_verified_candidate_copies_are_deterministic(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     candidate_a = _candidate(tmp_path, "candidate-a", marker="A")
-    candidate_b = _candidate(tmp_path, "candidate-b", marker="B")
+    candidate_b_parent = tmp_path / "deep"
+    candidate_b_parent.mkdir()
+    candidate_b = _candidate(candidate_b_parent, "candidate-b", marker="B")
     intake = tmp_path / "intake"
     intake.mkdir()
     monkeypatch.setattr(
@@ -93,8 +96,14 @@ def test_discovery_fails_closed_for_distinct_candidate_baselines(
     )
     monkeypatch.setattr(discovery, "_pair_is_valid", lambda *_args: True)
 
-    assert discovery._candidate_signature(candidate_a) != discovery._candidate_signature(
+    result = discovery.discover_inputs(search_roots=[tmp_path])
+    # Both pairs are assumed here to have already passed the real accepted-corpus
+    # proof. The deeper candidate wins only as a deterministic path tie-breaker.
+    assert result["candidate_root"] == str(candidate_b.resolve())
+    assert result["verified_pair_count"] == 2
+    assert result["candidate_artifact_signature"] == discovery._candidate_signature(
         candidate_b
     )
-    with pytest.raises(AcceptanceBlocked, match="frozen_input_pair_ambiguous"):
-        discovery.discover_inputs(search_roots=[tmp_path])
+    assert discovery._candidate_signature(candidate_a) != result[
+        "candidate_artifact_signature"
+    ]
