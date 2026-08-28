@@ -4,9 +4,10 @@
 This helper exists only to minimize local operator work for the corrective
 Product-Owner candidate. It scans a small caller-controlled set of private
 roots, identifies candidate manifests, and proves a candidate/intake pairing by
-building the repository's ephemeral split-root view and validating the frozen
-corpus contract. It never downloads, copies into the durable roots, invokes a
-provider/EIS endpoint, or changes accepted evidence.
+building the repository's ephemeral split-root view, validating the frozen
+corpus contract, and successfully preparing all 10 declared physical source
+files from the proposed intake root. It never downloads, writes to the durable
+roots, invokes a provider/EIS endpoint, or changes accepted evidence.
 """
 
 from __future__ import annotations
@@ -22,17 +23,22 @@ from scripts.arv001.complete_corpus_contract import (
     DEFAULT_CORPUS_SHA256,
     AcceptanceBlocked,
     load_candidate,
+    prepare_documents,
     validate_document_set,
 )
 from scripts.arv001.corpus_hash_resolver import resolve_corpus_hash_profile
 from scripts.arv001.run_complete_corpus_acceptance_split_roots import (
     build_ephemeral_candidate_view,
 )
+from src.shared.config.settings import get_settings
 
 _REQUIRED_CANDIDATE_FILES = {
     "physical-files.json",
-    "metadata.json",
+    "logical-documents.json",
     "document-set-summary.json",
+    "deterministic-parse-summary.json",
+    "intake-summary.json",
+    "metadata.json",
 }
 _MAX_DISCOVERED_DIRECTORIES = 3000
 
@@ -68,9 +74,9 @@ def _candidate_roots(search_roots: list[Path]) -> list[Path]:
 
 def _intake_candidates(candidate: Path, search_roots: list[Path]) -> list[Path]:
     values: set[Path] = {candidate}
-    # The durable layout used by ARV-001 commonly keeps metadata in a candidate
-    # root and source bytes in a sibling/nearby normalized intake tree. Search
-    # only nearby directories and explicit private search roots.
+    # The durable ARV-001 layout keeps candidate summaries and normalized
+    # source bytes close to one another. Do not perform an unbounded disk scan:
+    # inspect only the candidate's near relatives and explicit private roots.
     for value in (candidate.parent, candidate.parent.parent):
         if _is_safe_directory(value):
             values.add(value.resolve())
@@ -99,7 +105,10 @@ def _pair_is_valid(candidate: Path, intake: Path, expected_corpus_sha: str) -> b
             )
             values, _shapes = load_candidate(view)
             physical = values.get("physical-files.json")
+            metadata = values.get("metadata.json")
             if not isinstance(physical, list) or len(physical) != 10:
+                return False
+            if not isinstance(metadata, dict):
                 return False
             profile = resolve_corpus_hash_profile(physical, expected_corpus_sha)
             if profile.sha256 != expected_corpus_sha:
@@ -109,6 +118,30 @@ def _pair_is_valid(candidate: Path, intake: Path, expected_corpus_sha: str) -> b
             if not isinstance(summary, dict):
                 return False
             if int(summary.get("logical_document_count") or 0) != 6:
+                return False
+
+            # This is the critical proof of the intake root. The same canonical
+            # preparation routine used by the candidate builder must resolve,
+            # hash-check and extract every declared physical source file from
+            # this proposed root. A metadata-only match is not enough.
+            settings = get_settings()
+            prepared = prepare_documents(
+                physical=physical,
+                metadata=metadata,
+                intake_root=intake,
+                max_chars=settings.document_extract_max_chars,
+                chunk_size=settings.rag_chunk_size_chars,
+                chunk_overlap=settings.rag_chunk_overlap_chars,
+            )
+            if len(prepared) != 10:
+                return False
+            if any(
+                item.path.is_symlink()
+                or not item.path.is_file()
+                or not item.sha256
+                or item.size_bytes <= 0
+                for item in prepared
+            ):
                 return False
             return True
     except (AcceptanceBlocked, OSError, ValueError, KeyError, TypeError):
@@ -124,7 +157,6 @@ def discover_inputs(
         for intake in _intake_candidates(candidate, search_roots):
             if _pair_is_valid(candidate, intake, expected_corpus_sha):
                 matches.append((candidate, intake))
-    # Deduplicate aliases after resolve().
     matches = sorted(set(matches))
     if not matches:
         raise AcceptanceBlocked("decision_useful_frozen_input_pair_not_found")
@@ -138,6 +170,7 @@ def discover_inputs(
         "physical_document_count": 10,
         "logical_document_count": 6,
         "frozen_corpus_sha256": expected_corpus_sha,
+        "source_bytes_verified": True,
         "provider_calls_performed": False,
         "eis_requests_performed": False,
         "git_mutations": 0,
