@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 """Discover the existing frozen ARV-001 candidate/intake pair without mutation.
 
-This helper scans caller-controlled private roots in priority order, identifies
-candidate manifests, and proves a candidate/intake pairing by validating the
-accepted corpus contract and successfully preparing all 10 declared physical
-source files from the proposed intake root.
+Discovery is deliberately fail-closed, but it must not require a complete walk
+of a large private root before checking a candidate that has already been
+encountered. Candidate manifests are therefore yielded and verified while the
+scope is being traversed. The directory guard remains unchanged: if no fully
+verified pair is proven before the guard is exhausted, discovery fails closed.
 
-A broad private root is allowed to exceed the directory-scan guard only if a
-higher-priority bounded root has already produced a fully verified accepted-
-corpus pair. No verification is skipped: every returned pair independently
-proves the accepted corpus SHA, the 10-physical/6-logical document contract and
-successful source-byte preparation.
-
+Every returned pair independently proves the accepted corpus SHA, the
+10-physical/6-logical document contract and successful source-byte preparation.
 No provider, EIS, download, durable-root write, or accepted-evidence mutation
 occurs.
 """
@@ -23,6 +20,7 @@ import hashlib
 import json
 import os
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +47,19 @@ _REQUIRED_CANDIDATE_FILES = {
 }
 _MAX_DISCOVERED_DIRECTORIES = 5000
 _SCOPE_TOO_LARGE = "decision_useful_discovery_scope_too_large"
+_PRUNED_DIRECTORY_NAMES = {".git", "node_modules", ".venv", "venv", "__pycache__"}
+_PRIORITY_MARKERS = (
+    "arv001",
+    "candidate",
+    "prepared",
+    "acceptance",
+    "controlled-evidence",
+    "final",
+    "runtime",
+    "corpus",
+    "intake",
+    "source",
+)
 
 
 def _is_safe_directory(path: Path) -> bool:
@@ -70,61 +81,130 @@ def _resolved_unique_roots(search_roots: list[Path]) -> list[Path]:
     return values
 
 
-def _candidate_roots(search_roots: list[Path]) -> list[Path]:
-    found: set[Path] = set()
+def _directory_priority(path: Path) -> tuple[int, int, str]:
+    """Deterministically put ARV-001/candidate-shaped directories first."""
+
+    name = path.name.casefold()
+    hits = sum(1 for marker in _PRIORITY_MARKERS if marker in name)
+    # A shallower candidate normally represents the durable/root artifact set;
+    # marker count dominates depth and lexical order keeps traversal stable.
+    return (-hits, len(path.parts), name)
+
+
+def _iter_candidate_roots(search_root: Path) -> Iterator[tuple[Path, int]]:
+    """Yield candidate manifests immediately while traversing one bounded scope.
+
+    The traversal is explicit depth-first rather than a collect-then-validate
+    ``os.walk``. This is the critical property: once a manifest is encountered,
+    the caller can prove its corpus/source bytes before unrelated directories
+    consume the scan budget.
+    """
+
+    root = search_root.expanduser().resolve(strict=False)
+    if not _is_safe_directory(root):
+        return
+
+    stack: list[Path] = [root]
     visited = 0
-    for search_root in search_roots:
-        root = search_root.expanduser().resolve(strict=False)
-        if not _is_safe_directory(root):
+    while stack:
+        current = stack.pop()
+        if not _is_safe_directory(current):
             continue
-        for current, dirs, files in os.walk(root, followlinks=False):
-            visited += 1
-            if visited > _MAX_DISCOVERED_DIRECTORIES:
-                raise AcceptanceBlocked(_SCOPE_TOO_LARGE)
-            dirs[:] = [
-                value
-                for value in dirs
-                if not (Path(current) / value).is_symlink()
-                and value not in {".git", "node_modules", ".venv", "venv"}
-            ]
-            if _REQUIRED_CANDIDATE_FILES.issubset(set(files)):
-                found.add(Path(current).resolve())
+        visited += 1
+        if visited > _MAX_DISCOVERED_DIRECTORIES:
+            raise AcceptanceBlocked(_SCOPE_TOO_LARGE)
+
+        try:
+            entries = list(os.scandir(current))
+        except OSError:
+            continue
+
+        files: set[str] = set()
+        children: list[Path] = []
+        for entry in entries:
+            try:
+                if entry.is_symlink():
+                    continue
+                if entry.is_file(follow_symlinks=False):
+                    files.add(entry.name)
+                elif (
+                    entry.name not in _PRUNED_DIRECTORY_NAMES
+                    and entry.is_dir(follow_symlinks=False)
+                ):
+                    children.append(Path(entry.path).resolve(strict=False))
+            except OSError:
+                continue
+
+        if _REQUIRED_CANDIDATE_FILES.issubset(files):
+            yield current.resolve(), visited
+
+        # LIFO stack: push lower-priority children first so priority candidates
+        # are visited next without sacrificing deterministic full traversal.
+        children.sort(key=_directory_priority, reverse=True)
+        stack.extend(children)
+
+
+def _candidate_roots(search_roots: list[Path]) -> list[Path]:
+    """Compatibility collector; production discovery verifies the stream inline."""
+
+    found: set[Path] = set()
+    for search_root in search_roots:
+        for candidate, _visited in _iter_candidate_roots(search_root):
+            found.add(candidate)
     return sorted(found)
 
 
 def _intake_candidates(candidate: Path, search_roots: list[Path]) -> list[Path]:
-    values: set[Path] = {candidate}
+    """Return safe likely source roots with local relatives before broad roots."""
+
+    values: list[Path] = []
+    seen: set[Path] = set()
     resolved_search_roots = {
         value.expanduser().resolve(strict=False) for value in search_roots
     }
-    # The durable ARV-001 layout keeps candidate summaries and normalized source
-    # bytes close to one another. Search near relatives and immediate children
-    # of explicit private roots, but never use the broad search root itself as
-    # an intake candidate: content-identity resolution recursively scans intake.
-    for value in (candidate.parent, candidate.parent.parent):
-        resolved = value.resolve(strict=False)
-        if resolved in resolved_search_roots:
-            continue
-        if _is_safe_directory(resolved):
-            values.add(resolved)
-            try:
-                children = list(resolved.iterdir())
-            except OSError:
-                children = []
-            for child in children:
-                if _is_safe_directory(child):
-                    values.add(child.resolve())
-    for root in resolved_search_roots:
-        if not _is_safe_directory(root):
-            continue
+
+    def add(value: Path, *, allow_search_root: bool = False) -> None:
+        resolved = value.expanduser().resolve(strict=False)
+        if resolved in seen:
+            return
+        if not allow_search_root and resolved in resolved_search_roots:
+            return
+        if not _is_safe_directory(resolved):
+            return
+        seen.add(resolved)
+        values.append(resolved)
+
+    def add_children(value: Path) -> None:
+        resolved = value.expanduser().resolve(strict=False)
+        if not _is_safe_directory(resolved):
+            return
         try:
-            children = list(root.iterdir())
+            children = [
+                child.resolve(strict=False)
+                for child in resolved.iterdir()
+                if _is_safe_directory(child)
+                and child.name not in _PRUNED_DIRECTORY_NAMES
+            ]
         except OSError:
-            children = []
+            return
+        children.sort(key=_directory_priority)
         for child in children:
-            if _is_safe_directory(child):
-                values.add(child.resolve())
-    return sorted(values)
+            add(child)
+
+    # Candidate itself can be a combined candidate/intake layout. Nearby durable
+    # relatives are much more likely than arbitrary top-level private storage.
+    add(candidate, allow_search_root=True)
+    add_children(candidate.parent)
+    add(candidate.parent)
+    add_children(candidate.parent.parent)
+    add(candidate.parent.parent)
+
+    # Explicit roots themselves are intentionally not used as intake candidates:
+    # content-identity resolution can recurse through intake. Only direct safe
+    # children are considered as a final bounded fallback.
+    for root in search_roots:
+        add_children(root)
+    return values
 
 
 def _candidate_signature(candidate: Path) -> str:
@@ -192,91 +272,98 @@ def _pair_is_valid(candidate: Path, intake: Path, expected_corpus_sha: str) -> b
         return False
 
 
-def _matches_for_candidates(
-    candidates: list[Path],
+def _verified_intake_for_candidate(
+    candidate: Path,
     *,
-    intake_search_roots: list[Path],
+    search_roots: list[Path],
     expected_corpus_sha: str,
-) -> list[tuple[Path, Path]]:
-    matches: list[tuple[Path, Path]] = []
-    for candidate in candidates:
-        for intake in _intake_candidates(candidate, intake_search_roots):
-            if _pair_is_valid(candidate, intake, expected_corpus_sha):
-                matches.append((candidate, intake))
-    return sorted(set(matches))
+) -> tuple[Path | None, int]:
+    attempts = 0
+    for intake in _intake_candidates(candidate, search_roots):
+        attempts += 1
+        if _pair_is_valid(candidate, intake, expected_corpus_sha):
+            return intake, attempts
+    return None, attempts
+
+
+def _result(
+    *,
+    candidate: Path,
+    intake: Path,
+    expected_corpus_sha: str,
+    selected_scope: Path,
+    oversized_scopes: int,
+    candidate_manifests_checked: int,
+    directories_scanned_before_match: int,
+    intake_pairs_checked: int,
+) -> dict[str, Any]:
+    return {
+        "status": "FOUND",
+        "candidate_root": str(candidate),
+        "intake_root": str(intake),
+        "candidate_artifact_signature": _candidate_signature(candidate),
+        "verified_pair_count": 1,
+        "physical_document_count": 10,
+        "logical_document_count": 6,
+        "frozen_corpus_sha256": expected_corpus_sha,
+        "source_bytes_verified": True,
+        "selected_discovery_scope": str(selected_scope),
+        "oversized_scopes_skipped_before_match": oversized_scopes,
+        "candidate_manifests_checked": candidate_manifests_checked,
+        "directories_scanned_before_match": directories_scanned_before_match,
+        "intake_pairs_checked": intake_pairs_checked,
+        "provider_calls_performed": False,
+        "eis_requests_performed": False,
+        "git_mutations": 0,
+    }
 
 
 def discover_inputs(
     *, search_roots: list[Path], expected_corpus_sha: str = DEFAULT_CORPUS_SHA256
 ) -> dict[str, Any]:
-    """Return a verified pair from the first priority scope that can prove one.
+    """Return the first fully verified pair encountered in priority traversal.
 
-    Roots are intentionally evaluated one at a time. This prevents an unrelated
-    oversized root (for example all of ``/private/tmp``) from blocking a valid
-    pair that is already available in a narrower accepted-runtime root. If no
-    verified pair exists in any bounded root and at least one requested root
-    exceeded the scan guard, discovery still fails closed with the original
-    scope-too-large code.
+    Candidate manifests are validated as soon as they are encountered. A valid
+    accepted-corpus pair therefore wins before unrelated directories can exhaust
+    the guard. Invalid manifests do not weaken fail-closed behavior: traversal
+    continues, and exhausting a scope without a proven pair remains a failure.
     """
 
     roots = _resolved_unique_roots(search_roots)
-    matches: list[tuple[Path, Path]] = []
-    selected_scope: Path | None = None
     oversized_scopes: list[Path] = []
+    candidate_manifests_checked = 0
+    intake_pairs_checked = 0
 
     for root in roots:
         try:
-            candidates = _candidate_roots([root])
+            for candidate, directories_scanned in _iter_candidate_roots(root):
+                candidate_manifests_checked += 1
+                intake, attempts = _verified_intake_for_candidate(
+                    candidate,
+                    search_roots=roots,
+                    expected_corpus_sha=expected_corpus_sha,
+                )
+                intake_pairs_checked += attempts
+                if intake is not None:
+                    return _result(
+                        candidate=candidate,
+                        intake=intake,
+                        expected_corpus_sha=expected_corpus_sha,
+                        selected_scope=root,
+                        oversized_scopes=len(oversized_scopes),
+                        candidate_manifests_checked=candidate_manifests_checked,
+                        directories_scanned_before_match=directories_scanned,
+                        intake_pairs_checked=intake_pairs_checked,
+                    )
         except AcceptanceBlocked as exc:
             if str(exc) != _SCOPE_TOO_LARGE:
                 raise
             oversized_scopes.append(root)
             continue
 
-        root_matches = _matches_for_candidates(
-            candidates,
-            intake_search_roots=roots,
-            expected_corpus_sha=expected_corpus_sha,
-        )
-        if root_matches:
-            matches = root_matches
-            selected_scope = root
-            break
-
-    if not matches:
-        if oversized_scopes:
-            raise AcceptanceBlocked(_SCOPE_TOO_LARGE)
-        raise AcceptanceBlocked("decision_useful_frozen_input_pair_not_found")
-
-    # Every surviving pair independently proved the exact accepted corpus SHA,
-    # complete document-set contract and successful 10-file preparation. Path
-    # duplication is therefore a private-storage concern, not evidence identity.
-    # Prefer the narrowest intake root to minimize resolver scan scope.
-    matches.sort(
-        key=lambda value: (
-            -len(value[1].parts),
-            -len(value[0].parts),
-            str(value[1]),
-            str(value[0]),
-        )
-    )
-    candidate, intake = matches[0]
-    return {
-        "status": "FOUND",
-        "candidate_root": str(candidate),
-        "intake_root": str(intake),
-        "candidate_artifact_signature": _candidate_signature(candidate),
-        "verified_pair_count": len(matches),
-        "physical_document_count": 10,
-        "logical_document_count": 6,
-        "frozen_corpus_sha256": expected_corpus_sha,
-        "source_bytes_verified": True,
-        "selected_discovery_scope": str(selected_scope) if selected_scope else None,
-        "oversized_scopes_skipped_before_match": len(oversized_scopes),
-        "provider_calls_performed": False,
-        "eis_requests_performed": False,
-        "git_mutations": 0,
-    }
+    if oversized_scopes:
+        raise AcceptanceBlocked(_SCOPE_TOO_LARGE)
+    raise AcceptanceBlocked("decision_useful_frozen_input_pair_not_found")
 
 
 def _args() -> argparse.Namespace:
