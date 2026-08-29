@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """Discover the existing frozen ARV-001 candidate/intake pair without mutation.
 
-This helper minimizes local operator work for the corrective Product-Owner
-candidate. It scans a small caller-controlled set of private roots, identifies
+This helper scans caller-controlled private roots in priority order, identifies
 candidate manifests, and proves a candidate/intake pairing by validating the
 accepted corpus contract and successfully preparing all 10 declared physical
 source files from the proposed intake root.
 
-Multiple historical private copies are allowed only after each copy independently
-proves the same accepted corpus SHA and complete 10-physical/6-logical contract.
-The narrowest verified intake root is selected deterministically. No provider,
-EIS, download, durable-root write, or accepted-evidence mutation occurs.
+A broad private root is allowed to exceed the directory-scan guard only if a
+higher-priority bounded root has already produced a fully verified accepted-
+corpus pair. No verification is skipped: every returned pair independently
+proves the accepted corpus SHA, the 10-physical/6-logical document contract and
+successful source-byte preparation.
+
+No provider, EIS, download, durable-root write, or accepted-evidence mutation
+occurs.
 """
 
 from __future__ import annotations
@@ -45,6 +48,7 @@ _REQUIRED_CANDIDATE_FILES = {
     "metadata.json",
 }
 _MAX_DISCOVERED_DIRECTORIES = 5000
+_SCOPE_TOO_LARGE = "decision_useful_discovery_scope_too_large"
 
 
 def _is_safe_directory(path: Path) -> bool:
@@ -52,6 +56,18 @@ def _is_safe_directory(path: Path) -> bool:
         return path.is_dir() and not path.is_symlink()
     except OSError:
         return False
+
+
+def _resolved_unique_roots(search_roots: list[Path]) -> list[Path]:
+    values: list[Path] = []
+    seen: set[Path] = set()
+    for value in search_roots:
+        resolved = value.expanduser().resolve(strict=False)
+        if resolved in seen or not _is_safe_directory(resolved):
+            continue
+        seen.add(resolved)
+        values.append(resolved)
+    return values
 
 
 def _candidate_roots(search_roots: list[Path]) -> list[Path]:
@@ -64,7 +80,7 @@ def _candidate_roots(search_roots: list[Path]) -> list[Path]:
         for current, dirs, files in os.walk(root, followlinks=False):
             visited += 1
             if visited > _MAX_DISCOVERED_DIRECTORIES:
-                raise AcceptanceBlocked("decision_useful_discovery_scope_too_large")
+                raise AcceptanceBlocked(_SCOPE_TOO_LARGE)
             dirs[:] = [
                 value
                 for value in dirs
@@ -91,13 +107,21 @@ def _intake_candidates(candidate: Path, search_roots: list[Path]) -> list[Path]:
             continue
         if _is_safe_directory(resolved):
             values.add(resolved)
-            for child in resolved.iterdir():
+            try:
+                children = list(resolved.iterdir())
+            except OSError:
+                children = []
+            for child in children:
                 if _is_safe_directory(child):
                     values.add(child.resolve())
     for root in resolved_search_roots:
         if not _is_safe_directory(root):
             continue
-        for child in root.iterdir():
+        try:
+            children = list(root.iterdir())
+        except OSError:
+            children = []
+        for child in children:
             if _is_safe_directory(child):
                 values.add(child.resolve())
     return sorted(values)
@@ -168,17 +192,60 @@ def _pair_is_valid(candidate: Path, intake: Path, expected_corpus_sha: str) -> b
         return False
 
 
+def _matches_for_candidates(
+    candidates: list[Path],
+    *,
+    intake_search_roots: list[Path],
+    expected_corpus_sha: str,
+) -> list[tuple[Path, Path]]:
+    matches: list[tuple[Path, Path]] = []
+    for candidate in candidates:
+        for intake in _intake_candidates(candidate, intake_search_roots):
+            if _pair_is_valid(candidate, intake, expected_corpus_sha):
+                matches.append((candidate, intake))
+    return sorted(set(matches))
+
+
 def discover_inputs(
     *, search_roots: list[Path], expected_corpus_sha: str = DEFAULT_CORPUS_SHA256
 ) -> dict[str, Any]:
+    """Return a verified pair from the first priority scope that can prove one.
+
+    Roots are intentionally evaluated one at a time. This prevents an unrelated
+    oversized root (for example all of ``/private/tmp``) from blocking a valid
+    pair that is already available in a narrower accepted-runtime root. If no
+    verified pair exists in any bounded root and at least one requested root
+    exceeded the scan guard, discovery still fails closed with the original
+    scope-too-large code.
+    """
+
+    roots = _resolved_unique_roots(search_roots)
     matches: list[tuple[Path, Path]] = []
-    candidates = _candidate_roots(search_roots)
-    for candidate in candidates:
-        for intake in _intake_candidates(candidate, search_roots):
-            if _pair_is_valid(candidate, intake, expected_corpus_sha):
-                matches.append((candidate, intake))
-    matches = sorted(set(matches))
+    selected_scope: Path | None = None
+    oversized_scopes: list[Path] = []
+
+    for root in roots:
+        try:
+            candidates = _candidate_roots([root])
+        except AcceptanceBlocked as exc:
+            if str(exc) != _SCOPE_TOO_LARGE:
+                raise
+            oversized_scopes.append(root)
+            continue
+
+        root_matches = _matches_for_candidates(
+            candidates,
+            intake_search_roots=roots,
+            expected_corpus_sha=expected_corpus_sha,
+        )
+        if root_matches:
+            matches = root_matches
+            selected_scope = root
+            break
+
     if not matches:
+        if oversized_scopes:
+            raise AcceptanceBlocked(_SCOPE_TOO_LARGE)
         raise AcceptanceBlocked("decision_useful_frozen_input_pair_not_found")
 
     # Every surviving pair independently proved the exact accepted corpus SHA,
@@ -204,6 +271,8 @@ def discover_inputs(
         "logical_document_count": 6,
         "frozen_corpus_sha256": expected_corpus_sha,
         "source_bytes_verified": True,
+        "selected_discovery_scope": str(selected_scope) if selected_scope else None,
+        "oversized_scopes_skipped_before_match": len(oversized_scopes),
         "provider_calls_performed": False,
         "eis_requests_performed": False,
         "git_mutations": 0,
@@ -226,8 +295,8 @@ def _args() -> argparse.Namespace:
 def main() -> int:
     args = _args()
     search_roots = args.search_roots or [
-        Path("/private/tmp"),
         Path.home() / ".local/share/arvectum/arv001",
+        Path("/private/tmp"),
     ]
     try:
         result = discover_inputs(
