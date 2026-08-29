@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """One-command local runner for the ARV-001 decision-useful PO candidate.
 
-The command discovers the already-existing frozen candidate/intake pair under a
-small private search scope, proves all frozen source bytes through canonical
+The command discovers the already-existing frozen candidate/intake pair under
+bounded private scopes, proves all frozen source bytes through canonical
 preparation, binds to the accepted canonical report, and delegates to the
 fail-closed zero-provider candidate builder. It then verifies that the material
 terms which passed extraction are still visible in final customer HTML.
+
+The accepted canonical path is also used as a locality hint: the containing
+``arv001-*`` runtime root is searched before broad private storage. This changes
+only discovery order; exact corpus/source/document/render verification remains
+mandatory.
 
 It performs no provider, EIS, RAG, acknowledgement, acceptance, production DB,
 or Git mutation.
@@ -89,6 +94,35 @@ def _failure(code: str) -> int:
     return 2
 
 
+def _canonical_runtime_root(canonical: Path) -> Path:
+    """Return the narrowest stable ARV-001 runtime ancestor for discovery."""
+
+    resolved = canonical.expanduser().resolve(strict=False)
+    for parent in resolved.parents:
+        if parent.name.startswith("arv001-"):
+            return parent
+    return resolved.parent
+
+
+def _default_search_roots(canonical: Path) -> list[Path]:
+    """Prioritize bounded accepted-runtime locality before broad fallbacks."""
+
+    candidates = [
+        _canonical_runtime_root(canonical),
+        Path.home() / ".local/share/arvectum/arv001",
+        Path("/private/tmp"),
+    ]
+    result: list[Path] = []
+    seen: set[Path] = set()
+    for value in candidates:
+        resolved = value.expanduser().resolve(strict=False)
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        result.append(resolved)
+    return result
+
+
 def _validate_published_candidate(output_root: Path) -> dict:
     html_path = output_root / "upload-ready-report-decision-useful.html"
     analysis_path = output_root / "decision-useful-analysis.json"
@@ -108,12 +142,9 @@ def _validate_published_candidate(output_root: Path) -> dict:
 
 def main() -> int:
     args = _arguments()
-    search_roots = args.search_roots or [
-        Path("/private/tmp"),
-        Path.home() / ".local/share/arvectum/arv001",
-    ]
     try:
         canonical = args.canonical_output.expanduser().resolve(strict=True)
+        search_roots = args.search_roots or _default_search_roots(canonical)
         discovery = discover_inputs(
             search_roots=search_roots,
             expected_corpus_sha=args.expected_corpus_sha,
@@ -163,6 +194,12 @@ def main() -> int:
                 "source_bytes_verified": bool(discovery.get("source_bytes_verified")),
                 "verified_private_input_pairs": int(
                     discovery.get("verified_pair_count") or 1
+                ),
+                "selected_discovery_scope": discovery.get(
+                    "selected_discovery_scope"
+                ),
+                "oversized_scopes_skipped_before_match": int(
+                    discovery.get("oversized_scopes_skipped_before_match") or 0
                 ),
                 "output_root": str(output_root),
                 "provider_calls_performed": False,
