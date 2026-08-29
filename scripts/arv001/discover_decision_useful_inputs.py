@@ -4,8 +4,14 @@
 Discovery is deliberately fail-closed, but it must not require a complete walk
 of a large private root before checking a candidate that has already been
 encountered. Candidate manifests are therefore yielded and verified while the
-scope is being traversed. The directory guard remains unchanged: if no fully
-verified pair is proven before the guard is exhausted, discovery fails closed.
+scope is being traversed. A fully verified pair is retained even if unrelated
+folders later exhaust the directory guard.
+
+For bounded scopes that finish normally, historical deterministic selection is
+preserved: among independently verified copies, prefer the narrowest/deepest
+intake and then the deepest candidate root. The directory guard remains
+unchanged; if no fully verified pair is proven before it is exhausted,
+discovery fails closed.
 
 Every returned pair independently proves the accepted corpus SHA, the
 10-physical/6-logical document contract and successful source-byte preparation.
@@ -86,19 +92,11 @@ def _directory_priority(path: Path) -> tuple[int, int, str]:
 
     name = path.name.casefold()
     hits = sum(1 for marker in _PRIORITY_MARKERS if marker in name)
-    # A shallower candidate normally represents the durable/root artifact set;
-    # marker count dominates depth and lexical order keeps traversal stable.
     return (-hits, len(path.parts), name)
 
 
 def _iter_candidate_roots(search_root: Path) -> Iterator[tuple[Path, int]]:
-    """Yield candidate manifests immediately while traversing one bounded scope.
-
-    The traversal is explicit depth-first rather than a collect-then-validate
-    ``os.walk``. This is the critical property: once a manifest is encountered,
-    the caller can prove its corpus/source bytes before unrelated directories
-    consume the scan budget.
-    """
+    """Yield candidate manifests immediately while traversing one scope."""
 
     root = search_root.expanduser().resolve(strict=False)
     if not _is_safe_directory(root):
@@ -138,8 +136,8 @@ def _iter_candidate_roots(search_root: Path) -> Iterator[tuple[Path, int]]:
         if _REQUIRED_CANDIDATE_FILES.issubset(files):
             yield current.resolve(), visited
 
-        # LIFO stack: push lower-priority children first so priority candidates
-        # are visited next without sacrificing deterministic full traversal.
+        # LIFO: lower-priority children are pushed first so candidate-shaped
+        # paths are inspected earlier, while full traversal remains deterministic.
         children.sort(key=_directory_priority, reverse=True)
         stack.extend(children)
 
@@ -191,17 +189,15 @@ def _intake_candidates(candidate: Path, search_roots: list[Path]) -> list[Path]:
         for child in children:
             add(child)
 
-    # Candidate itself can be a combined candidate/intake layout. Nearby durable
-    # relatives are much more likely than arbitrary top-level private storage.
     add(candidate, allow_search_root=True)
     add_children(candidate.parent)
     add(candidate.parent)
     add_children(candidate.parent.parent)
     add(candidate.parent.parent)
 
-    # Explicit roots themselves are intentionally not used as intake candidates:
-    # content-identity resolution can recurse through intake. Only direct safe
-    # children are considered as a final bounded fallback.
+    # Broad explicit roots themselves are never intake candidates because
+    # content-identity preparation can recurse. Direct safe children are a
+    # bounded fallback and still undergo exact source-byte validation.
     for root in search_roots:
         add_children(root)
     return values
@@ -272,45 +268,69 @@ def _pair_is_valid(candidate: Path, intake: Path, expected_corpus_sha: str) -> b
         return False
 
 
-def _verified_intake_for_candidate(
+def _verified_intakes_for_candidate(
     candidate: Path,
     *,
     search_roots: list[Path],
     expected_corpus_sha: str,
-) -> tuple[Path | None, int]:
+) -> tuple[list[Path], int]:
+    """Validate every plausible intake so historical narrowest-root choice remains."""
+
     attempts = 0
+    verified: set[Path] = set()
     for intake in _intake_candidates(candidate, search_roots):
         attempts += 1
-        if _pair_is_valid(candidate, intake, expected_corpus_sha):
-            return intake, attempts
-    return None, attempts
+        resolved = intake.expanduser().resolve(strict=False)
+        if _pair_is_valid(candidate, resolved, expected_corpus_sha):
+            verified.add(resolved)
+    return sorted(verified), attempts
+
+
+def _select_match(
+    matches: list[tuple[Path, Path, int]],
+) -> tuple[Path, Path, int]:
+    """Preserve the historical deterministic private-copy tie-breaker."""
+
+    unique = sorted(
+        set(matches),
+        key=lambda value: (
+            -len(value[1].parts),
+            -len(value[0].parts),
+            str(value[1]),
+            str(value[0]),
+            value[2],
+        ),
+    )
+    return unique[0]
 
 
 def _result(
     *,
-    candidate: Path,
-    intake: Path,
+    matches: list[tuple[Path, Path, int]],
     expected_corpus_sha: str,
     selected_scope: Path,
     oversized_scopes: int,
     candidate_manifests_checked: int,
-    directories_scanned_before_match: int,
     intake_pairs_checked: int,
+    selected_scope_guard_exhausted: bool,
 ) -> dict[str, Any]:
+    candidate, intake, directories_scanned = _select_match(matches)
+    verified_pair_count = len({(item[0], item[1]) for item in matches})
     return {
         "status": "FOUND",
         "candidate_root": str(candidate),
         "intake_root": str(intake),
         "candidate_artifact_signature": _candidate_signature(candidate),
-        "verified_pair_count": 1,
+        "verified_pair_count": verified_pair_count,
         "physical_document_count": 10,
         "logical_document_count": 6,
         "frozen_corpus_sha256": expected_corpus_sha,
         "source_bytes_verified": True,
         "selected_discovery_scope": str(selected_scope),
+        "selected_scope_guard_exhausted": selected_scope_guard_exhausted,
         "oversized_scopes_skipped_before_match": oversized_scopes,
         "candidate_manifests_checked": candidate_manifests_checked,
-        "directories_scanned_before_match": directories_scanned_before_match,
+        "directories_scanned_before_match": directories_scanned,
         "intake_pairs_checked": intake_pairs_checked,
         "provider_calls_performed": False,
         "eis_requests_performed": False,
@@ -321,12 +341,13 @@ def _result(
 def discover_inputs(
     *, search_roots: list[Path], expected_corpus_sha: str = DEFAULT_CORPUS_SHA256
 ) -> dict[str, Any]:
-    """Return the first fully verified pair encountered in priority traversal.
+    """Return a fully verified pair without losing it to a later scan-limit hit.
 
-    Candidate manifests are validated as soon as they are encountered. A valid
-    accepted-corpus pair therefore wins before unrelated directories can exhaust
-    the guard. Invalid manifests do not weaken fail-closed behavior: traversal
-    continues, and exhausting a scope without a proven pair remains a failure.
+    Each candidate is validated at encounter time. Verified pairs are retained.
+    If a bounded scope finishes, all verified copies in that scope participate in
+    the historical deterministic tie-breaker. If the scope later hits the guard,
+    an already-proven pair is still safe to return; only a guard hit with zero
+    proven pairs remains ``decision_useful_discovery_scope_too_large``.
     """
 
     roots = _resolved_unique_roots(search_roots)
@@ -335,31 +356,45 @@ def discover_inputs(
     intake_pairs_checked = 0
 
     for root in roots:
+        root_matches: list[tuple[Path, Path, int]] = []
         try:
             for candidate, directories_scanned in _iter_candidate_roots(root):
                 candidate_manifests_checked += 1
-                intake, attempts = _verified_intake_for_candidate(
+                intakes, attempts = _verified_intakes_for_candidate(
                     candidate,
                     search_roots=roots,
                     expected_corpus_sha=expected_corpus_sha,
                 )
                 intake_pairs_checked += attempts
-                if intake is not None:
-                    return _result(
-                        candidate=candidate,
-                        intake=intake,
-                        expected_corpus_sha=expected_corpus_sha,
-                        selected_scope=root,
-                        oversized_scopes=len(oversized_scopes),
-                        candidate_manifests_checked=candidate_manifests_checked,
-                        directories_scanned_before_match=directories_scanned,
-                        intake_pairs_checked=intake_pairs_checked,
-                    )
+                root_matches.extend(
+                    (candidate, intake, directories_scanned) for intake in intakes
+                )
         except AcceptanceBlocked as exc:
             if str(exc) != _SCOPE_TOO_LARGE:
                 raise
+            if root_matches:
+                return _result(
+                    matches=root_matches,
+                    expected_corpus_sha=expected_corpus_sha,
+                    selected_scope=root,
+                    oversized_scopes=len(oversized_scopes),
+                    candidate_manifests_checked=candidate_manifests_checked,
+                    intake_pairs_checked=intake_pairs_checked,
+                    selected_scope_guard_exhausted=True,
+                )
             oversized_scopes.append(root)
             continue
+
+        if root_matches:
+            return _result(
+                matches=root_matches,
+                expected_corpus_sha=expected_corpus_sha,
+                selected_scope=root,
+                oversized_scopes=len(oversized_scopes),
+                candidate_manifests_checked=candidate_manifests_checked,
+                intake_pairs_checked=intake_pairs_checked,
+                selected_scope_guard_exhausted=False,
+            )
 
     if oversized_scopes:
         raise AcceptanceBlocked(_SCOPE_TOO_LARGE)
