@@ -4,8 +4,10 @@
 The command discovers the already-existing frozen candidate/intake pair under
 bounded private scopes, proves all frozen source bytes through canonical
 preparation, binds to the accepted canonical report, and delegates to the
-fail-closed zero-provider candidate builder. It then verifies that the material
-terms which passed extraction are still visible in final customer HTML.
+fail-closed zero-provider candidate builder. It then finalizes an explicit
+human decision contract (Decision / Evidence / Uncertainty / Caveats / Next
+action), verifies evidence traceability, and verifies that material terms are
+still visible in final customer HTML.
 
 The accepted canonical path is also used as a locality hint: the containing
 ``arv001-*`` runtime root is searched before broad private storage. This changes
@@ -33,6 +35,7 @@ from scripts.arv001.complete_corpus_contract import (
     AcceptanceBlocked,
 )
 from scripts.arv001.discover_decision_useful_inputs import discover_inputs
+from scripts.arv001.finalize_human_decision_contract import finalize_candidate
 from scripts.arv001.validate_decision_useful_candidate import (
     validate_rendered_material_terms,
 )
@@ -126,22 +129,44 @@ def _default_search_roots(canonical: Path) -> list[Path]:
 def _validate_published_candidate(output_root: Path) -> dict:
     html_path = output_root / "upload-ready-report-decision-useful.html"
     analysis_path = output_root / "decision-useful-analysis.json"
+    contract_path = output_root / "human-decision-contract.json"
     if not html_path.is_file() or html_path.is_symlink():
         raise AcceptanceBlocked("decision_useful_rendered_html_missing")
     if not analysis_path.is_file() or analysis_path.is_symlink():
         raise AcceptanceBlocked("decision_useful_rendered_analysis_missing")
+    if not contract_path.is_file() or contract_path.is_symlink():
+        raise AcceptanceBlocked("human_decision_contract_missing")
     try:
         rendered = html_path.read_text(encoding="utf-8")
         analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+        contract = json.loads(contract_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise AcceptanceBlocked("decision_useful_rendered_candidate_unreadable") from exc
     if not isinstance(analysis, dict):
         raise AcceptanceBlocked("decision_useful_rendered_analysis_invalid")
-    return validate_rendered_material_terms(rendered, analysis)
+    if not isinstance(contract, dict):
+        raise AcceptanceBlocked("human_decision_contract_invalid")
+    if contract.get("schema_version") != "arv001-human-decision-contract-v1":
+        raise AcceptanceBlocked("human_decision_contract_schema_invalid")
+    rendered_validation = validate_rendered_material_terms(rendered, analysis)
+    return {
+        **rendered_validation,
+        "human_decision_contract_present": True,
+        "human_decision_evidence_count": int(contract.get("evidence_count") or 0),
+        "human_decision_fact_count": int(contract.get("fact_count") or 0),
+        "human_decision_uncertainty_count": int(
+            contract.get("uncertainty_count") or 0
+        ),
+        "human_decision_contradiction_count": int(
+            contract.get("contradiction_count") or 0
+        ),
+    }
 
 
 def main() -> int:
     args = _arguments()
+    created_output = False
+    output_root = args.output_root.expanduser().resolve(strict=False)
     try:
         canonical = args.canonical_output.expanduser().resolve(strict=True)
         search_roots = args.search_roots or _default_search_roots(canonical)
@@ -158,27 +183,32 @@ def main() -> int:
             expected_corpus_sha=args.expected_corpus_sha,
             expected_canonical_sha=args.expected_canonical_sha,
         )
-    except AcceptanceBlocked as exc:
-        return _failure(str(exc))
-    except OSError:
-        return _failure("decision_useful_required_local_input_missing")
-
-    output_root = args.output_root.expanduser().resolve(strict=False)
-    try:
+        created_output = True
+        human_contract = finalize_candidate(
+            output_root=output_root,
+            canonical_output=canonical,
+            expected_canonical_sha=args.expected_canonical_sha,
+        )
         rendered_validation = _validate_published_candidate(output_root)
     except AcceptanceBlocked as exc:
-        # A builder result that loses material detail during rendering is not a
-        # candidate. Remove only the just-created output root; frozen evidence
-        # and accepted canonical inputs remain read-only.
-        shutil.rmtree(output_root, ignore_errors=True)
+        if created_output:
+            shutil.rmtree(output_root, ignore_errors=True)
         return _failure(str(exc))
+    except OSError:
+        if created_output:
+            shutil.rmtree(output_root, ignore_errors=True)
+        return _failure("decision_useful_required_local_input_missing")
 
     print(
         json.dumps(
             {
                 "status": result["status"],
-                "marker": "ARV001_DECISION_USEFUL_LOCAL_CANDIDATE_READY",
-                "report_sha256": result["report_sha256"],
+                "marker": "ARV001_HUMAN_DECISION_LOCAL_CANDIDATE_READY",
+                "report_sha256": human_contract["report_sha256"],
+                "analysis_sha256": human_contract["analysis_sha256"],
+                "human_decision_contract_sha256": human_contract[
+                    "human_decision_contract_sha256"
+                ],
                 "material_detail_count": result["material_detail_count"],
                 "decision_usefulness_gate": result["decision_usefulness_gate"][
                     "status"
@@ -186,6 +216,9 @@ def main() -> int:
                 "decision_usefulness_checks": result["decision_usefulness_gate"][
                     "checks"
                 ],
+                "human_decision_contract": human_contract["validation"],
+                "decision": human_contract["decision"],
+                "next_action": human_contract["next_action"],
                 "rendered_material_validation": rendered_validation,
                 "canonical_sha256": result["accepted_canonical_sha256"],
                 "frozen_corpus_sha256": result["frozen_corpus_sha256"],
@@ -197,6 +230,9 @@ def main() -> int:
                 ),
                 "selected_discovery_scope": discovery.get(
                     "selected_discovery_scope"
+                ),
+                "selected_scope_guard_exhausted": bool(
+                    discovery.get("selected_scope_guard_exhausted")
                 ),
                 "oversized_scopes_skipped_before_match": int(
                     discovery.get("oversized_scopes_skipped_before_match") or 0
