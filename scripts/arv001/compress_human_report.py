@@ -208,7 +208,7 @@ def _compact_decision(contract: dict[str, Any], analysis: dict[str, Any]) -> str
         '<h2>Решение</h2>'
         f'<p data-claim-kind="interpretation" data-evidence-ids="{_ids_attr(decision.get("evidence_ids") or [])}">'
         f'<strong>Предварительная рекомендация:</strong> {_escape(decision.get("text"))}</p>'
-        '<h3>Почему</h3>'
+        '<h3>Доказательства</h3>'
         f'<ul>{"".join(key_points)}</ul>'
         '<h3>Неопределённость</h3>'
         f'<ul>{uncertainty_html}</ul>'
