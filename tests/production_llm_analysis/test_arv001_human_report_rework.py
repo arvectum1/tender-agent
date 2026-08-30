@@ -185,3 +185,20 @@ def test_report_rework_rejects_non_r10_canonical_input() -> None:
             {"ai_runtime_provenance": {"producer": "frozen_r9"}},
             expected_registry_number=DEFAULT_REGISTRY_NUMBER,
         )
+
+
+def test_report_rework_preserves_literal_backslashes(monkeypatch) -> None:
+    """Literal backslash sequences in canonical text must not crash re.sub."""
+    monkeypatch.setattr(
+        rework_human_report,
+        "_render_customer_report_html",
+        lambda _model: _accepted_report_html(
+            'Ссылка: http://example.com/ &quot; \\l &quot;dst&quot;'
+        ),
+    )
+    rendered = rework_human_report.rework_canonical_report(
+        _r10_model(),
+        expected_registry_number=DEFAULT_REGISTRY_NUMBER,
+    )
+    assert "\\l" in rendered
+    assert "&quot; \\l &quot;dst&quot;" in rendered

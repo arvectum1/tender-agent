@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -198,6 +199,10 @@ def main() -> int:
         if created_output:
             shutil.rmtree(output_root, ignore_errors=True)
         return _failure("decision_useful_required_local_input_missing")
+    except re.error:
+        if created_output:
+            shutil.rmtree(output_root, ignore_errors=True)
+        return _failure("human_decision_regex_render_failed")
 
     print(
         json.dumps(

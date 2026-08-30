@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from scripts.arv001 import run_decision_useful_candidate_local as runner
@@ -215,3 +216,49 @@ def test_local_runner_removes_candidate_when_human_contract_finalization_fails(
     assert result["status"] == "FAIL_CLOSED"
     assert result["failure_code"] == "human_decision_fact_without_evidence"
     assert result["product_owner"] == "REJECTED"
+
+
+def test_local_runner_fail_closed_on_regex_render_error(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    canonical = tmp_path / "canonical.json"
+    canonical.write_text("{}", encoding="utf-8")
+    candidate = tmp_path / "candidate"
+    intake = tmp_path / "intake"
+    candidate.mkdir()
+    intake.mkdir()
+    output = tmp_path / "output"
+
+    monkeypatch.setattr(runner, "_arguments", lambda: _args(output, canonical, tmp_path))
+    monkeypatch.setattr(
+        runner,
+        "discover_inputs",
+        lambda **_kwargs: {
+            "candidate_root": str(candidate),
+            "intake_root": str(intake),
+        },
+    )
+
+    def fake_build_candidate(**_kwargs):
+        output.mkdir()
+        return _build_result()
+
+    monkeypatch.setattr(runner, "build_candidate", fake_build_candidate)
+    monkeypatch.setattr(
+        runner,
+        "finalize_candidate",
+        lambda **_kwargs: (_ for _ in ()).throw(re.error("bad escape \\l")),
+    )
+
+    assert runner.main() == 2
+    assert not output.exists()
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "FAIL_CLOSED"
+    assert result["failure_code"] == "human_decision_regex_render_failed"
+    assert result["provider_calls_performed"] is False
+    assert result["eis_requests_performed"] is False
+    assert result["quality_acceptance_rerun"] is False
+    assert result["acknowledgement_touched"] is False
+    assert result["product_owner"] == "REJECTED"
+    assert result["independent_review"] == "NOT_AUTHORIZED"
+    assert result["freeze"] == "NOT_ALLOWED"

@@ -543,7 +543,10 @@ def _replace_decision(rendered_html: str, contract: dict[str, Any]) -> str:
     matches = list(_DECISION_SECTION_RE.finditer(rendered_html))
     if len(matches) != 1:
         raise AcceptanceBlocked("human_decision_existing_decision_section_invalid")
-    return _DECISION_SECTION_RE.sub(_render_contract(contract), rendered_html, count=1)
+    replacement = _render_contract(contract)
+    return _DECISION_SECTION_RE.sub(
+        lambda _match: replacement, rendered_html, count=1
+    )
 
 
 def validate_human_decision_contract(

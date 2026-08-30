@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from scripts.arv001.complete_corpus_contract import AcceptanceBlocked
 from scripts.arv001 import finalize_human_decision_contract as human
+from scripts.arv001.complete_corpus_contract import AcceptanceBlocked
 
 
 def _canonical(*, with_analysis_time: bool = True) -> dict:
@@ -255,3 +255,52 @@ def test_stale_canonical_artifact_fails_closed_before_finalization(
             canonical_output=canonical_path,
             expected_canonical_sha="0" * 64,
         )
+
+
+def test_replace_decision_preserves_literal_backslashes() -> None:
+    """Literal backslash sequences in source text must not crash re.sub."""
+    canonical = _canonical()
+    analysis = _analysis()
+    analysis["contract"]["security"] = [
+        _row(
+            'Текст ссылается на http://example.com/doc/ " \\l "dst".',
+            "Проект контракта",
+            400,
+        )
+    ]
+    contract = human.build_human_decision_contract(
+        canonical_model=canonical,
+        canonical_sha=_sha(canonical),
+        analysis=analysis,
+        rendered_html="<p>Коммерческие предложения не загружены</p>",
+    )
+    original_html = '<main><section class="decision"><h2>old</h2></section></main>'
+    rendered = human._replace_decision(original_html, contract)
+    assert "\\l" in rendered
+    result = human.validate_human_decision_contract(rendered, contract)
+    assert result["status"] == "PASS"
+
+
+def test_replace_decision_preserves_regex_group_literals() -> None:
+    """Regex replacement templates like \\1 and \\g<1> must be literal."""
+    canonical = _canonical()
+    analysis = _analysis()
+    analysis["contract"]["security"] = [
+        _row(
+            "Обеспечение \\1니다; \\g<1> требует проверки.",
+            "Проект контракта",
+            400,
+        )
+    ]
+    contract = human.build_human_decision_contract(
+        canonical_model=canonical,
+        canonical_sha=_sha(canonical),
+        analysis=analysis,
+        rendered_html="",
+    )
+    original_html = '<main><section class="decision"><h2>old</h2></section></main>'
+    rendered = human._replace_decision(original_html, contract)
+    assert "\\1" in rendered
+    assert "\\g" in rendered
+    result = human.validate_human_decision_contract(rendered, contract)
+    assert result["status"] == "PASS"

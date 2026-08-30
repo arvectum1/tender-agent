@@ -279,7 +279,9 @@ def _replace_decision_section(model: dict[str, Any], rendered_html: str) -> str:
         f"<p><strong>Следующее действие:</strong> {_escape(next_action)}</p>"
         "</section>"
     )
-    return _DECISION_SECTION_RE.sub(section, rendered_html, count=1)
+    return _DECISION_SECTION_RE.sub(
+        lambda _match: section, rendered_html, count=1
+    )
 
 
 def _replace_duplicate_application_section(
