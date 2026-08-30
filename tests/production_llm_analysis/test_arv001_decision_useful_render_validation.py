@@ -84,6 +84,29 @@ def test_render_validator_passes_when_all_material_groups_survive() -> None:
     assert result["liability_cap_status"] == "found"
 
 
+def test_render_validator_allows_no_standard_when_gate_accepted_specific_technical_detail() -> None:
+    analysis = _analysis()
+    analysis["technical"]["standards"] = []
+    rendered = _html().replace("<p>ГОСТ 32511-2013</p>", "")
+
+    result = validate_rendered_material_terms(rendered, analysis)
+
+    assert result["status"] == "PASS"
+    assert result["exact_standard_count"] == 0
+    assert result["technical_detail_count"] == 1
+
+
+def test_render_validator_still_requires_extracted_standard_to_be_visible() -> None:
+    with pytest.raises(
+        AcceptanceBlocked,
+        match="decision_useful_rendered_exact_standard_missing",
+    ):
+        validate_rendered_material_terms(
+            _html().replace("<p>ГОСТ 32511-2013</p>", ""),
+            _analysis(),
+        )
+
+
 def test_render_validator_fails_when_payment_is_lost() -> None:
     payment = _analysis()["contract"]["payment"][0]["text"]
     with pytest.raises(AcceptanceBlocked, match="decision_useful_rendered_payment_missing"):
