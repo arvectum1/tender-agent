@@ -44,8 +44,8 @@ _SECURITY_SIZE = re.compile(
     re.IGNORECASE,
 )
 _SECURITY_SIZE_PLACEHOLDER = re.compile(
-    r"(?:размер\s+обеспечени\w*|обеспечени\w*[^.\n]{0,120}?размер)"
-    r"[^.\n]{0,420}?(?:_{2,}|(?:\.{3,}|…{2,}))\s*(?:руб\w*|%)",
+    r"(?:размер\s+обеспечени\w*|обеспечени\w*.{0,120}?размер)"
+    r".{0,420}?(?:_{2,}|(?:\.{3,}|…{2,}))\s*(?:руб\w*|%)",
     re.IGNORECASE,
 )
 _SECURITY_FORM = re.compile(
