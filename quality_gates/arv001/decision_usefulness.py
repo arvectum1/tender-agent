@@ -2,7 +2,9 @@
 
 Evidence coverage alone is insufficient for a procurement decision report. If
 substantive documents are present, the candidate must surface concrete material
-terms rather than generic existence statements.
+terms rather than generic existence statements. An explicitly blank source
+placeholder is itself decision-useful evidence: it must be preserved as an
+unresolved material term rather than misclassified as an extraction failure.
 """
 
 from __future__ import annotations
@@ -39,6 +41,11 @@ _PAYMENT_TRIGGER = re.compile(
 _SECURITY_SIZE = re.compile(
     r"(?:\d+(?:[.,]\d+)?\s*%|\d[\d\s]*(?:[.,]\d+)?\s*руб|"
     r"не\s+(?:требуется|устанавливается|предусмотрено))",
+    re.IGNORECASE,
+)
+_SECURITY_SIZE_PLACEHOLDER = re.compile(
+    r"(?:размер\s+обеспечени\w*|обеспечени\w*[^.\n]{0,120}?размер)"
+    r"[^.\n]{0,420}?(?:_{2,}|(?:\.{3,}|…{2,}))\s*(?:руб\w*|%)",
     re.IGNORECASE,
 )
 _SECURITY_FORM = re.compile(
@@ -178,6 +185,16 @@ def evaluate_decision_usefulness(
     cap = _specific_rows(list(contract.get("liability_cap") or []))
     cap_status = str(contract.get("liability_cap_status") or "not_checked")
 
+    security_text = _joined(security)
+    security_size_found = bool(_SECURITY_SIZE.search(security_text))
+    security_size_placeholder = bool(_SECURITY_SIZE_PLACEHOLDER.search(security_text))
+    if security_size_found:
+        security_size_status = "concrete_or_explicitly_not_required"
+    elif security_size_placeholder:
+        security_size_status = "source_placeholder_unresolved"
+    else:
+        security_size_status = "not_extracted"
+
     blockers: list[str] = []
     if "technical_specification" in kinds:
         material_technical = any(_EXACT_STANDARD.search(value) for value in standards) or bool(
@@ -215,8 +232,14 @@ def evaluate_decision_usefulness(
             blockers.append("liability_cap_claimed_found_without_clause")
 
     if "contract_performance_security" in kinds:
-        security_text = _joined(security)
-        if not security or not _SECURITY_SIZE.search(security_text):
+        # A blank amount placeholder in the source is not an extraction miss.
+        # It is a material source-level uncertainty that the human decision
+        # contract must surface explicitly. The gate therefore accepts it as
+        # decision-useful evidence while still rejecting a true absence of any
+        # amount/status signal.
+        if not security or (
+            not security_size_found and not security_size_placeholder
+        ):
             blockers.append("security_document_present_but_security_size_not_extracted")
         if not security or not _SECURITY_FORM.search(security_text):
             blockers.append("security_document_present_but_security_form_not_extracted")
@@ -233,6 +256,7 @@ def evaluate_decision_usefulness(
             "technical_specific_clause_count": len(technical_rows),
             "payment_clause_count": len(payment),
             "security_clause_count": len(security),
+            "security_size_status": security_size_status,
             "acceptance_clause_count": len(acceptance),
             "liability_clause_count": len(liability),
             "liability_cap_status": cap_status,
