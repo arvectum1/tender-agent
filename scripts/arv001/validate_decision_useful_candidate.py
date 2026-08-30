@@ -36,7 +36,10 @@ def validate_rendered_material_terms(rendered: str, analysis: dict[str, Any]) ->
     The extraction gate establishes semantic sufficiency. This validator checks
     the second half of the contract: source-backed terms accepted by that gate
     must still be visible in the final customer HTML. It does not infer or
-    synthesize missing facts.
+    synthesize missing facts. Exact standards are therefore required in the
+    HTML only when extraction actually found them; a gate-accepted concrete
+    technical characteristic is sufficient when the frozen source yields no
+    exact standard identifier.
     """
 
     plain = _plain_text(rendered)
@@ -44,8 +47,6 @@ def validate_rendered_material_terms(rendered: str, analysis: dict[str, Any]) ->
     contract = analysis.get("contract") if isinstance(analysis.get("contract"), dict) else {}
 
     standards = [str(value) for value in technical.get("standards") or [] if value]
-    if not standards:
-        raise AcceptanceBlocked("decision_useful_rendered_exact_standard_missing")
     for standard in standards:
         _require_excerpt(plain, standard, "decision_useful_rendered_exact_standard_missing")
 
