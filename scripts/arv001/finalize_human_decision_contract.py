@@ -56,6 +56,11 @@ _SECURITY_POSITIVE_RE = re.compile(
     r"независим\w*\s+гарант\w*|банковск\w*\s+гарант\w*)",
     re.IGNORECASE,
 )
+_SECURITY_SIZE_PLACEHOLDER_RE = re.compile(
+    r"(?:размер\s+обеспечени\w*|обеспечени\w*[^.\n]{0,120}?размер)"
+    r"[^.\n]{0,420}?(?:_{2,}|(?:\.{3,}|…{2,}))\s*(?:руб\w*|%)",
+    re.IGNORECASE,
+)
 
 _SECTIONS = (
     "Решение",
@@ -356,6 +361,30 @@ def build_human_decision_contract(
                 "evidence_ids": [report_evidence["evidence_id"]],
             }
         )
+
+    security_text = _group_text(analysis, "security")
+    security_ids = sorted(set(by_category.get("contract.security", [])))
+    if _SECURITY_SIZE_PLACEHOLDER_RE.search(security_text):
+        if not security_ids:
+            raise AcceptanceBlocked("human_decision_security_placeholder_without_evidence")
+        uncertainties.append(
+            {
+                "code": "performance_security_amount_unresolved",
+                "text": (
+                    "В проекте контракта размер обеспечения исполнения не заполнен: "
+                    "источник содержит шаблонное поле вместо конкретной суммы. "
+                    "Финансовая нагрузка по обеспечению поэтому не определена по "
+                    "зафиксированному комплекту документов."
+                ),
+                "evidence_ids": security_ids,
+            }
+        )
+        if recommendation.startswith("HOLD"):
+            next_action = (
+                next_action.rstrip(". ")
+                + ". Отдельно подтвердить конкретный размер обеспечения исполнения "
+                "контракта и учесть стоимость гарантии либо отвлечения денежных средств."
+            )
 
     conflicts = _contradictions(analysis, by_category)
     uncertainties.extend(conflicts)
