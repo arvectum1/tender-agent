@@ -5,7 +5,6 @@ import argparse
 import json
 import os
 import ssl
-from dataclasses import asdict
 from typing import Any
 from urllib.parse import urlparse
 
