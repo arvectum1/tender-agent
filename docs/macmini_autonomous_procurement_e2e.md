@@ -6,7 +6,7 @@ This development track proves one continuous local workflow:
 
 `public procurement discovery -> deterministic relevance selection -> public documentation intake -> completeness gate -> local analysis -> HTML report`.
 
-It is intentionally separate from ARV-001 freeze governance. The accepted ARV-001 human-facing baseline remains immutable; this workflow reuses the product code but does not synthesize independent review decisions.
+ARV-001 is now `CLOSED / FROZEN` on canonical `main`. The accepted ARV-001 human-facing baseline remains immutable; this E2E workflow reuses Product code but is a separate development track and must not rewrite the historical accepted source/evidence baseline or governance record.
 
 ## One-command runner
 
