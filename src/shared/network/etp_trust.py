@@ -333,9 +333,25 @@ def validate_ca_file(authority: Authority) -> Path:
     return path
 
 
+def _native_system_ssl_context() -> ssl.SSLContext:
+    """Build a verified TLS client context backed by the OS native trust store.
+
+    On macOS this delegates certificate verification to the system trust store
+    (Keychain) instead of relying on the CA bundle bundled with the Python/OpenSSL
+    runtime.  Failure to initialise native trust is terminal: callers must not
+    fall back to an unverified connection.
+    """
+    try:
+        return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    except Exception as exc:
+        raise ETPTrustConfigurationError(
+            "Native system TLS trust store is unavailable"
+        ) from exc
+
+
 def build_ssl_context(hostname: str, policy: TrustPolicy) -> ssl.SSLContext:
-    context = ssl.create_default_context()
     host_policy = resolve_host_policy(hostname, policy)
+    authority: Authority | None = None
     if host_policy and host_policy.authority:
         if not policy.enabled:
             raise ETPTrustConfigurationError("ETP trust policy is disabled")
@@ -344,10 +360,19 @@ def build_ssl_context(hostname: str, policy: TrustPolicy) -> ssl.SSLContext:
             raise ETPTrustConfigurationError(
                 f"Unknown authority: {host_policy.authority}"
             )
-        if authority.type == "system":
-            context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        else:
-            context.load_verify_locations(cafile=str(validate_ca_file(authority)))
+
+    if authority is not None and authority.type != "system":
+        # Explicit pinned/custom CA policies retain their existing dedicated
+        # OpenSSL context and validated CA file.  They are never bypassed by the
+        # default system-trust path.
+        context = ssl.create_default_context()
+        context.load_verify_locations(cafile=str(validate_ca_file(authority)))
+    else:
+        # Public/unregistered hosts and explicit system authorities both use the
+        # native OS trust store while keeping normal certificate and hostname
+        # verification enabled.
+        context = _native_system_ssl_context()
+
     context.verify_mode = ssl.CERT_REQUIRED
     context.check_hostname = True
     context.minimum_version = ssl.TLSVersion.TLSv1_2

@@ -68,6 +68,7 @@ from src.modules.tender_operator_agent_demo.upload_service import (
 )
 from src.modules.tender_operator_agent_demo.zakupki_soap_client import ZakupkiSoapClient
 from src.tender_research.providers.public_44fz_search import (
+    Public44FzSearchProvider,
     _parse_detail_metadata,
     _parse_document_links,
 )
@@ -492,20 +493,31 @@ def _parse_public_notice_attachments(page_html: str, *, page_url: str) -> list[P
 
 
 def _fetch_public_notice_attachments(source_url: str) -> list[ProcurementAttachment]:
-    documents_url = _infer_public_documents_url(source_url)
-    if not documents_url:
+    detail = Public44FzSearchProvider(bypass_proxy=True).fetch_detail(card_url=source_url)
+    if not detail.document_links:
         return []
 
-    opener = build_opener(ProxyHandler({}))
-    request = Request(documents_url, headers={"User-Agent": PUBLIC_EIS_USER_AGENT}, method="GET")
-    try:
-        with opener.open(request, timeout=20) as response:
-            page_html = response.read(PUBLIC_EIS_MAX_RESPONSE_BYTES + 1).decode("utf-8", errors="replace")
-    except (OSError, ValueError):
-        return []
-    if len(page_html) > PUBLIC_EIS_MAX_RESPONSE_BYTES:
-        return []
-    return _parse_public_notice_attachments(page_html, page_url=documents_url)
+    attachments: list[ProcurementAttachment] = []
+    for item in detail.document_links:
+        name = item.file_name or item.title
+        if not name or not item.url:
+            continue
+        parsed_url = urlparse(item.url)
+        attachment_id = item.raw.get("uid") or parse_qs(parsed_url.query).get(
+            "uid", [Path(parsed_url.path).name or name]
+        )[0]
+        extension = Path(name).suffix.lower() or Path(parsed_url.path).suffix.lower() or None
+        attachments.append(
+            ProcurementAttachment(
+                attachment_id=attachment_id,
+                name=name,
+                url=item.url,
+                extension=extension,
+                can_download=True,
+                requires_manual_upload=False,
+            )
+        )
+    return attachments
 
 
 def _role_hint_from_procurement_attachment(name: str) -> str | None:
@@ -529,6 +541,7 @@ def _role_hint_from_procurement_attachment(name: str) -> str | None:
         for token in (
             "проект контракта",
             "проект договора",
+            "электронный контракт",
             "муниципального контракта",
             "государственного контракта",
             "contract",

@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 
 def test_parse_public_notice_attachments_extracts_real_documents_and_skips_sign_links():
@@ -40,6 +41,42 @@ def test_parse_public_notice_attachments_extracts_real_documents_and_skips_sign_
     assert [item.name for item in attachments] == ["Техническое задание.pdf", "Расчет НМЦК.xlsx"]
     assert attachments[0].url == "https://zakupki.gov.ru/44fz/filestore/public/1.0/download/priz/file.html?uid=UID001"
     assert attachments[1].attachment_id == "UID002"
+
+
+def test_public_notice_attachment_fetch_uses_source_controlled_provider(monkeypatch):
+    from src.modules.tender_operator_agent_demo import procurement_intake_service as service
+
+    captured = {}
+
+    class FakeProvider:
+        def __init__(self, *, bypass_proxy):
+            captured["bypass_proxy"] = bypass_proxy
+
+        def fetch_detail(self, *, card_url):
+            captured["card_url"] = card_url
+            return SimpleNamespace(
+                document_links=[
+                    SimpleNamespace(
+                        file_name="Описание объекта закупки.docx",
+                        title=None,
+                        url="https://zakupki.gov.ru/44fz/filestore/public/1.0/download/priz/file.html?uid=UID001",
+                        raw={"uid": "UID001"},
+                    )
+                ]
+            )
+
+    monkeypatch.setattr(service, "Public44FzSearchProvider", FakeProvider)
+
+    attachments = service._fetch_public_notice_attachments(
+        "https://zakupki.gov.ru/epz/order/notice/ea44/view/common-info.html?regNumber=0373200000000000001"
+    )
+
+    assert captured == {
+        "bypass_proxy": True,
+        "card_url": "https://zakupki.gov.ru/epz/order/notice/ea44/view/common-info.html?regNumber=0373200000000000001",
+    }
+    assert attachments[0].name == "Описание объекта закупки.docx"
+    assert attachments[0].attachment_id == "UID001"
 
 
 def test_handoff_endpoint_requires_reestr_number(client, monkeypatch, tmp_path):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import ssl
 import subprocess
 from pathlib import Path
 
@@ -80,6 +81,35 @@ def test_unknown_host_keeps_strict_default_and_no_proxy_bypass(tmp_path: Path):
     assert context.verify_mode.value == 2
     assert context.check_hostname is True
     assert should_bypass_proxy("example.com", policy) is False
+
+
+def test_unknown_host_uses_native_system_trust(monkeypatch):
+    import src.shared.network.etp_trust as module
+
+    calls: list[int] = []
+
+    def native_context(protocol: int):
+        calls.append(protocol)
+        return ssl.SSLContext(protocol)
+
+    monkeypatch.setattr(module.truststore, "SSLContext", native_context)
+    context = build_ssl_context("example.com", TrustPolicy())
+
+    assert calls == [ssl.PROTOCOL_TLS_CLIENT]
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname is True
+    assert context.minimum_version == ssl.TLSVersion.TLSv1_2
+
+
+def test_native_system_trust_initialization_failure_is_fail_closed(monkeypatch):
+    import src.shared.network.etp_trust as module
+
+    def unavailable(_protocol: int):
+        raise OSError("system trust unavailable")
+
+    monkeypatch.setattr(module.truststore, "SSLContext", unavailable)
+    with pytest.raises(ETPTrustConfigurationError, match="Native system TLS trust store"):
+        build_ssl_context("example.com", TrustPolicy())
 
 
 def test_allowed_host_gets_extra_ca_and_direct_policy(tmp_path: Path):

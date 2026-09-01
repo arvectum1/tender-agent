@@ -64,10 +64,11 @@ def create_urllib_opener(
     *,
     policy: TrustPolicy | None = None,
     follow_redirects: bool = True,
+    source_direct_connection: bool = False,
 ):
     context, bypass_proxy = create_urllib_context(url, policy=policy)
     handlers = [HTTPSHandler(context=context)]
-    if bypass_proxy:
+    if bypass_proxy or source_direct_connection:
         handlers.append(ProxyHandler({}))
     if not follow_redirects:
         handlers.append(_NoRedirectHandler())

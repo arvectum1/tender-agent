@@ -178,7 +178,7 @@ def test_default_transport_uses_repository_verified_opener(monkeypatch):
 
     url = "https://zakupki.gov.ru/docs/file.pdf"
     opened: list[tuple[str, int]] = []
-    created_for: list[tuple[str, bool]] = []
+    created_for: list[tuple[str, bool, bool]] = []
 
     class FakeResponse:
         status = 200
@@ -209,8 +209,9 @@ def test_default_transport_uses_repository_verified_opener(monkeypatch):
         target_url: str,
         *,
         follow_redirects: bool,
+        source_direct_connection: bool,
     ):
-        created_for.append((target_url, follow_redirects))
+        created_for.append((target_url, follow_redirects, source_direct_connection))
         return FakeOpener()
 
     monkeypatch.setattr(
@@ -223,7 +224,7 @@ def test_default_transport_uses_repository_verified_opener(monkeypatch):
 
     assert payload == b"payload"
     assert content_type == "application/pdf"
-    assert created_for == [(url, False)]
+    assert created_for == [(url, False, True)]
     assert opened == [(url, 30)]
     assert not hasattr(
         attachment_downloader,
@@ -236,7 +237,7 @@ def test_default_transport_rebuilds_verified_opener_for_redirect(monkeypatch):
 
     source_url = "https://zakupki.gov.ru/docs/file.pdf"
     target_url = "https://int44.zakupki.gov.ru/docs/file.pdf"
-    created_for: list[tuple[str, bool]] = []
+    created_for: list[tuple[str, bool, bool]] = []
 
     class FakeResponse:
         status = 200
@@ -275,8 +276,9 @@ def test_default_transport_rebuilds_verified_opener_for_redirect(monkeypatch):
         target: str,
         *,
         follow_redirects: bool,
+        source_direct_connection: bool,
     ):
-        created_for.append((target, follow_redirects))
+        created_for.append((target, follow_redirects, source_direct_connection))
         if target == source_url:
             return RedirectingOpener()
         return SuccessfulOpener()
@@ -294,7 +296,7 @@ def test_default_transport_rebuilds_verified_opener_for_redirect(monkeypatch):
 
     assert payload == b"payload"
     assert content_type == "application/pdf"
-    assert created_for == [(source_url, False), (target_url, False)]
+    assert created_for == [(source_url, False, True), (target_url, False, True)]
 
 
 def test_default_transport_rejects_foreign_redirect(monkeypatch):
@@ -316,7 +318,7 @@ def test_default_transport_rejects_foreign_redirect(monkeypatch):
     monkeypatch.setattr(
         attachment_downloader,
         "create_urllib_opener",
-        lambda _url, *, follow_redirects: RedirectingOpener(),
+        lambda _url, *, follow_redirects, source_direct_connection: RedirectingOpener(),
     )
 
     with pytest.raises(AttachmentTransportError) as exc_info:
@@ -343,7 +345,7 @@ def test_default_transport_fails_closed_on_certificate_error(monkeypatch):
     monkeypatch.setattr(
         attachment_downloader,
         "create_urllib_opener",
-        lambda _url, *, follow_redirects: opener,
+        lambda _url, *, follow_redirects, source_direct_connection: opener,
     )
 
     with pytest.raises(AttachmentTransportError) as exc_info:
