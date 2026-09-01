@@ -29,7 +29,7 @@ Record:
 
 Pilot execution MUST NOT start when the runtime HEAD is stale relative to `origin/main` or the accepted runner is absent.
 
-The first attempted execution on 2026-09-01 was invalid as a multi-case pilot because runtime HEAD `84f859ca4998b58fd689dabc2221c88fef3a9420` was 204 commits behind canonical `main`; the accepted runner was added after that baseline. This condition is classified as a runtime precondition blocker, not as evidence about EIS, procurement-specific behavior, analysis quality, or report quality.
+The first attempted execution on 2026-09-01 did not constitute a valid multi-case pilot: runtime HEAD `84f859ca4998b58fd689dabc2221c88fef3a9420` is an ancestor of canonical `main` by 204 commits, and `scripts/run_macmini_autonomous_procurement.py` was added later in that history. Therefore the observed block is classified as `RUNTIME_PRECONDITION_STALE_CHECKOUT`, not as evidence about EIS transport, procurement selection, document intake, analysis quality, fallback behavior, or report quality.
 
 After a clean fast-forward reconciliation, record the new runtime HEAD as `RUNTIME_HEAD_BEFORE` and keep it unchanged for all pilot cases.
 
