@@ -1,0 +1,1 @@
+Temporary sentinel for branch creation fallback.
