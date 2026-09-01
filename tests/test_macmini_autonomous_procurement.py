@@ -4,8 +4,11 @@ from pathlib import Path
 import pytest
 
 from scripts.run_macmini_autonomous_procurement import (
+    BackendClient,
     E2EBlocked,
     Selection,
+    _auth_credentials_from_env,
+    _basic_auth_header,
     _recent_publication_window,
     choose_candidate,
     execute,
@@ -87,6 +90,58 @@ class FakeClient:
 
     def report_html(self, run_id: str):
         return f"<!doctype html><html><body>{run_id}</body></html>"
+
+
+def _clear_auth_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in (
+        "AI_CORP_PILOT_AUTH_USERNAME",
+        "AI_CORP_PILOT_AUTH_PASSWORD",
+        "AI_CORP_TENDER_PILOT_BASIC_AUTH_USERNAME",
+        "AI_CORP_TENDER_PILOT_BASIC_AUTH_PASSWORD",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
+def test_auth_credentials_support_runtime_legacy_env(monkeypatch: pytest.MonkeyPatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("AI_CORP_TENDER_PILOT_BASIC_AUTH_USERNAME", "pilot_operator")
+    monkeypatch.setenv("AI_CORP_TENDER_PILOT_BASIC_AUTH_PASSWORD", "dummy-secret")
+
+    assert _auth_credentials_from_env() == ("pilot_operator", "dummy-secret")
+
+
+def test_auth_credentials_prefer_canonical_env(monkeypatch: pytest.MonkeyPatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("AI_CORP_PILOT_AUTH_USERNAME", "canonical")
+    monkeypatch.setenv("AI_CORP_PILOT_AUTH_PASSWORD", "canonical-secret")
+    monkeypatch.setenv("AI_CORP_TENDER_PILOT_BASIC_AUTH_USERNAME", "legacy")
+    monkeypatch.setenv("AI_CORP_TENDER_PILOT_BASIC_AUTH_PASSWORD", "legacy-secret")
+
+    assert _auth_credentials_from_env() == ("canonical", "canonical-secret")
+
+
+def test_auth_credentials_fail_closed_when_partial(monkeypatch: pytest.MonkeyPatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("AI_CORP_PILOT_AUTH_USERNAME", "pilot_operator")
+
+    with pytest.raises(E2EBlocked) as caught:
+        _auth_credentials_from_env()
+
+    assert caught.value.code == "backend_auth_configuration_incomplete"
+    assert caught.value.details["username_present"] is True
+    assert caught.value.details["password_present"] is False
+
+
+def test_backend_client_adds_basic_auth_without_exposing_password():
+    client = BackendClient(
+        "http://127.0.0.1:8001",
+        basic_auth=("pilot_operator", "dummy-secret"),
+    )
+
+    headers = client._headers("application/json")
+
+    assert headers["Authorization"] == _basic_auth_header(("pilot_operator", "dummy-secret"))
+    assert "dummy-secret" not in headers["Authorization"]
 
 
 def test_choose_candidate_uses_highest_relevance():
