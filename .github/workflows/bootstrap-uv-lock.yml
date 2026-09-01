@@ -27,7 +27,7 @@ jobs:
       - name: Commit generated lockfile
         shell: bash
         run: |
-          if git diff --quiet -- uv.lock; then
+          if [[ -z "$(git status --porcelain -- uv.lock)" ]]; then
             echo "uv.lock is already current"
             exit 0
           fi
