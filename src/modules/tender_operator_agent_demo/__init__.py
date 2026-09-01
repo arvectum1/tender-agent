@@ -9,6 +9,10 @@ from src.modules.tender_operator_agent_demo.decision_useful_runtime_patch import
 from src.modules.tender_operator_agent_demo.decision_useful_output_patch import (
     install as _install_decision_useful_output_patch,
 )
+from src.modules.tender_operator_agent_demo.grounded_fallback_patch import (
+    install as _install_grounded_fallback_patch,
+)
 
 _install_decision_useful_runtime_patch()
 _install_decision_useful_output_patch()
+_install_grounded_fallback_patch()
