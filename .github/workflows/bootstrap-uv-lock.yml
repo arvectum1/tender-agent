@@ -1,0 +1,38 @@
+name: Bootstrap uv lock
+
+on:
+  push:
+    branches:
+      - chore/reproducible-uv-lock
+
+permissions:
+  contents: write
+
+jobs:
+  lock-and-focused-offline-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install uv
+        run: python -m pip install --upgrade uv
+      - name: Generate lockfile
+        run: uv lock
+      - name: Sync locked development environment
+        run: uv sync --frozen --extra dev
+      - name: Run P8.04/P8.05 offline tests
+        run: uv run pytest -q tests/test_p8_04_eis_temporal_revalidation.py tests/test_p8_05_temporal_acceptance_binding.py
+      - name: Commit generated lockfile
+        shell: bash
+        run: |
+          if git diff --quiet -- uv.lock; then
+            echo "uv.lock is already current"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add uv.lock
+          git commit -m "chore: add reproducible uv lock"
+          git push origin HEAD:chore/reproducible-uv-lock
