@@ -1,7 +1,7 @@
 """Source-bound deterministic fallback hardening for PILOT-001-D04.
 
 The operational pilot showed that the deterministic adapter could emit generic
-goods/software assumptions as if they were procurement facts.  Install this
+goods/software assumptions as if they were procurement facts. Install this
 compatibility patch after the existing decision-usefulness layers and before
 public facades capture legacy callables.
 """
@@ -15,10 +15,14 @@ from src.modules.tender_operator_agent_demo import upload_service_legacy as _leg
 
 
 _INSTALLED = False
-_ORIGINAL_PRELIMINARY = _legacy._build_preliminary_procurement_analysis
-_ORIGINAL_GOODS_REQUIREMENTS = _legacy._build_goods_requirement_rows
-_ORIGINAL_GOODS_RFQ = _legacy._build_goods_rfq_payload
-_ORIGINAL_GOODS_ECONOMICS = _legacy._build_goods_economics_payload
+# These callables are captured inside install(), not at import time. The package
+# imports all patch modules before invoking their installers, so import-time
+# capture would accidentally bypass the decision-usefulness wrappers installed
+# immediately before this D04 layer.
+_ORIGINAL_PRELIMINARY: Any = None
+_ORIGINAL_GOODS_REQUIREMENTS: Any = None
+_ORIGINAL_GOODS_RFQ: Any = None
+_ORIGINAL_GOODS_ECONOMICS: Any = None
 
 _THEMES: dict[str, tuple[str, ...]] = {
     "delivery_deadline": (
@@ -386,8 +390,17 @@ def _build_preliminary_procurement_analysis(
 def install() -> None:
     """Install source-bound deterministic builders exactly once."""
     global _INSTALLED
+    global _ORIGINAL_PRELIMINARY
+    global _ORIGINAL_GOODS_REQUIREMENTS
+    global _ORIGINAL_GOODS_RFQ
+    global _ORIGINAL_GOODS_ECONOMICS
     if _INSTALLED:
         return
+    # Capture after earlier compatibility layers have already installed.
+    _ORIGINAL_PRELIMINARY = _legacy._build_preliminary_procurement_analysis
+    _ORIGINAL_GOODS_REQUIREMENTS = _legacy._build_goods_requirement_rows
+    _ORIGINAL_GOODS_RFQ = _legacy._build_goods_rfq_payload
+    _ORIGINAL_GOODS_ECONOMICS = _legacy._build_goods_economics_payload
     _legacy._build_goods_requirement_rows = _build_goods_requirement_rows
     _legacy._build_goods_questions = _build_goods_questions
     _legacy._build_goods_rfq_payload = _build_goods_rfq_payload
