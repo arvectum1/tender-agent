@@ -1,13 +1,14 @@
 """Source-bound deterministic fallback hardening for PILOT-001-D04.
 
-The operational pilot showed that the deterministic adapter could emit generic
-goods/software assumptions as if they were procurement facts. Install this
-compatibility patch after the existing decision-usefulness layers and before
-public facades capture legacy callables.
+The operational pilot showed that deterministic fallback could emit generic
+goods/software assumptions as if they were procurement facts. This layer runs
+after the existing decision-usefulness patches and before public facades capture
+legacy callables. It changes no external-action or LLM provenance boundary.
 """
 
 from __future__ import annotations
 
+from copy import deepcopy
 import re
 from typing import Any, Iterable
 
@@ -15,101 +16,151 @@ from src.modules.tender_operator_agent_demo import upload_service_legacy as _leg
 
 
 _INSTALLED = False
-# These callables are captured inside install(), not at import time. The package
-# imports all patch modules before invoking their installers, so import-time
-# capture would accidentally bypass the decision-usefulness wrappers installed
-# immediately before this D04 layer.
+# Capture these inside install(), after earlier compatibility layers are active.
 _ORIGINAL_PRELIMINARY: Any = None
-_ORIGINAL_GOODS_REQUIREMENTS: Any = None
-_ORIGINAL_GOODS_RFQ: Any = None
-_ORIGINAL_GOODS_ECONOMICS: Any = None
+_ORIGINAL_OUTPUT_PAYLOADS: Any = None
 
-_THEMES: dict[str, tuple[str, ...]] = {
-    "delivery_deadline": (
-        r"\b\d+\s+(?:рабоч(?:их|ие)|календарн(?:ых|ые))\s+дн",
-        r"срок(?:и|ом)?\s+(?:поставк|отгрузк|исполнен)",
-        r"поставк[аи]\s+по\s+заявк",
-    ),
-    "delivery_logistics": (r"\bдоставк",),
-    "unloading": (r"разгруз",),
-    "packaging": (r"упаков",),
-    "stock": (r"наличи[ея]\s+(?:товар|на\s+склад)", r"складск"),
-    "quality_documents": (
-        r"сертифик",
-        r"декларац",
-        r"паспорт(?:а|ы)?\s+качеств",
-        r"документ\w*\s+качеств",
-    ),
-    "normative": (r"\bгост\b", r"\bту\b", r"нормативн"),
-    "analog": (r"аналог", r"эквивалент"),
-    "manufacturer": (r"производител", r"страна\s+происхожд"),
-    "service_resources": (r"специалист", r"ремонтн\w*\s+баз", r"оборудован"),
-    "spare_parts": (r"запасн\w*\s+част", r"расходн\w*\s+материал"),
-    "software": (
-        r"программн",
-        r"интеграц",
-        r"\bсмэв\b",
-        r"лиценз",
-        r"модул",
-        r"информационн\w*\s+систем",
-    ),
+_THEME_SPECS: dict[str, dict[str, tuple[str, ...]]] = {
+    "delivery_deadline": {
+        "detect": (
+            r"срок[^.\n]{0,80}\b\d+\s+(?:рабоч(?:их|ие)|календарн(?:ых|ые))\s+дн",
+            r"\b\d+\s+(?:рабоч(?:их|ие)|календарн(?:ых|ые))\s+дн[^.\n]{0,80}(?:постав|исполн|выполн|оказан|отгруз)",
+            r"срок(?:и|ом)?\s+(?:поставк|отгрузк|исполнен|выполнен|оказан)",
+            r"поставк[аи]\s+по\s+заявк",
+        ),
+        "evidence": (
+            r"(?:срок(?:и)?\s+(?:поставк|отгрузк|исполнен|выполнен|оказан)|поставк[аи]\s+по\s+заявк)[^.\n]{0,160}",
+            r"\b\d+\s+(?:рабоч(?:их|ие)|календарн(?:ых|ые))\s+дн[^.\n]{0,120}(?:постав|исполн|выполн|оказан|отгруз)",
+        ),
+    },
+    "delivery_logistics": {
+        "detect": (r"\bдоставк",),
+        "evidence": (r"\bдоставк",),
+    },
+    "unloading": {"detect": (r"разгруз",), "evidence": (r"разгруз",)},
+    "packaging": {"detect": (r"упаков",), "evidence": (r"упаков",)},
+    "stock": {
+        "detect": (r"складск", r"наличи[ея]\s+(?:товар|на\s+склад)"),
+        "evidence": (r"складск", r"наличи[ея]\s+(?:товар|на\s+склад)"),
+    },
+    "certificate": {"detect": (r"сертифик",), "evidence": (r"сертифик",)},
+    "declaration": {"detect": (r"декларац",), "evidence": (r"декларац",)},
+    "quality_passport": {
+        "detect": (r"паспорт(?:а|ы)?\s+качеств", r"документ\w*\s+качеств"),
+        "evidence": (r"паспорт(?:а|ы)?\s+качеств", r"документ\w*\s+качеств"),
+    },
+    "gost": {
+        "detect": (r"\bгост\b",),
+        "evidence": (r"\bгост(?:\s|[-–—№]|\d)",),
+    },
+    "technical_conditions": {
+        "detect": (r"\bту\b", r"техническ\w*\s+услов"),
+        "evidence": (r"\bту\s+(?:\d|производител|на\s+)", r"техническ\w*\s+услов"),
+    },
+    "analog": {
+        "detect": (r"аналог", r"эквивалент"),
+        "evidence": (r"аналог", r"эквивалент"),
+    },
+    "manufacturer": {
+        "detect": (r"производител",),
+        "evidence": (r"производител",),
+    },
+    "origin_country": {
+        "detect": (r"страна\s+происхожд",),
+        "evidence": (r"страна\s+происхожд",),
+    },
+    "marking": {"detect": (r"маркиров",), "evidence": (r"маркиров",)},
+    "safety": {"detect": (r"безопасност",), "evidence": (r"безопасност",)},
+    "warranty": {"detect": (r"гаранти",), "evidence": (r"гаранти",)},
+    "specialists": {
+        "detect": (r"специалист",),
+        "evidence": (r"специалист",),
+    },
+    "repair_base": {
+        "detect": (r"ремонтн\w*\s+баз",),
+        "evidence": (r"ремонтн\w*\s+баз",),
+    },
+    "performer_equipment": {
+        "detect": (r"наличи[ея][^.\n]{0,40}оборудован", r"оборудован[^.\n]{0,60}исполнител"),
+        "evidence": (r"наличи[ея][^.\n]{0,40}оборудован", r"оборудован[^.\n]{0,60}исполнител"),
+    },
+    "spare_parts": {
+        "detect": (r"запасн\w*\s+част", r"расходн\w*\s+материал"),
+        "evidence": (r"запасн\w*\s+част", r"расходн\w*\s+материал"),
+    },
+    "software": {"detect": (r"программн",), "evidence": (r"программн",)},
+    "integration": {"detect": (r"интеграц",), "evidence": (r"интеграц",)},
+    "module": {"detect": (r"\bмодул",), "evidence": (r"\bмодул",)},
+    "license": {
+        "detect": (r"лиценз", r"передач\w*\s+прав"),
+        "evidence": (r"лиценз", r"передач\w*\s+прав"),
+    },
+    "medical": {
+        "detect": (r"медицинск", r"\bсэмд\b", r"меддан"),
+        "evidence": (r"медицинск", r"\bсэмд\b", r"меддан"),
+    },
+    "smev": {"detect": (r"\bсмэв\b",), "evidence": (r"\bсмэв\b",)},
+    "ern": {"detect": (r"\bерн\b",), "evidence": (r"\bерн\b",)},
+    "defense_data": {
+        "detect": (r"минобороны", r"министерств\w*\s+обороны", r"витрин\w*\s+дан"),
+        "evidence": (r"минобороны", r"министерств\w*\s+обороны", r"витрин\w*\s+дан"),
+    },
+    "drums": {"detect": (r"барабан",), "evidence": (r"барабан",)},
+    "goods_supply": {
+        "detect": (r"позици\w*\s+поставк", r"объ[её]м\s+поставк", r"поставляем\w*\s+товар"),
+        "evidence": (r"позици\w*\s+поставк", r"объ[её]м\s+поставк", r"поставляем\w*\s+товар"),
+    },
 }
 
-_LABELS = {
+_THEME_LABELS = {
     "delivery_deadline": "срок исполнения/поставки",
     "delivery_logistics": "условия доставки",
     "unloading": "разгрузка",
     "packaging": "упаковка",
     "stock": "складской остаток/наличие",
-    "quality_documents": "документы качества",
-    "normative": "ГОСТ/ТУ и нормативные требования",
+    "certificate": "сертификаты",
+    "declaration": "декларации",
+    "quality_passport": "паспорт/документы качества",
+    "gost": "ГОСТ",
+    "technical_conditions": "ТУ/технические условия",
     "analog": "допустимость аналогов/эквивалентов",
-    "manufacturer": "производитель/страна происхождения",
-    "service_resources": "специалисты/оборудование/ресурсная база",
+    "manufacturer": "производитель",
+    "origin_country": "страна происхождения",
+    "marking": "маркировка",
+    "safety": "требования безопасности",
+    "warranty": "гарантийные условия",
+    "specialists": "требования к специалистам",
+    "repair_base": "ремонтная/ресурсная база",
+    "performer_equipment": "оборудование исполнителя",
     "spare_parts": "запасные части/расходные материалы",
-    "software": "программная доработка/интеграции/лицензирование",
+    "software": "программное обеспечение/доработка",
+    "integration": "интеграционные требования",
+    "module": "модуль/компонент системы",
+    "license": "лицензирование/передача прав",
+    "medical": "медицинская предметная область",
+    "smev": "СМЭВ",
+    "ern": "ЕРН",
+    "defense_data": "данные/витрина Минобороны",
+    "drums": "кабельные барабаны",
+    "goods_supply": "товарные позиции/объём поставки",
 }
 
-_GOODS_MATERIAL = {
-    "delivery_deadline",
-    "delivery_logistics",
-    "unloading",
-    "packaging",
-    "stock",
-    "quality_documents",
-    "normative",
-    "analog",
-    "manufacturer",
+_HARDCODED_GENERIC_REQUIREMENT_TITLES = {
+    "соответствие гост / ту",
+    "сертификаты и паспорт качества",
+    "маркировка и безопасность",
+    "доставка до заказчика",
 }
-_SERVICE_MATERIAL = {"delivery_deadline", "service_resources", "spare_parts"}
-_WORKS_MATERIAL = {"delivery_deadline", "service_resources", "software"}
 
 
 def _clean(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
-def _source_corpus(
-    documents: Iterable[Any],
-    *extra_texts: str,
-) -> str:
+def _source_corpus(documents: Iterable[Any], *extra_texts: str) -> str:
     parts = [_clean(getattr(document, "text", "")) for document in documents]
     parts.extend(_clean(text) for text in extra_texts)
     return "\n".join(part for part in parts if part).lower()
-
-
-def _mentions(text: str, theme: str) -> bool:
-    lowered = _clean(text).lower()
-    return any(re.search(pattern, lowered, re.IGNORECASE) for pattern in _THEMES[theme])
-
-
-def _supported(corpus: str, theme: str) -> bool:
-    return any(re.search(pattern, corpus, re.IGNORECASE) for pattern in _THEMES[theme])
-
-
-def _insufficient(theme_or_label: str) -> str:
-    label = _LABELS.get(theme_or_label, theme_or_label)
-    return f"INSUFFICIENT_EVIDENCE: {label} — первичные документы не подтверждают это условие."
 
 
 def _category(procurement_kind: str | None) -> str:
@@ -123,175 +174,86 @@ def _category(procurement_kind: str | None) -> str:
     return "SERVICES"
 
 
-def _unsupported_themes(text: str, *, corpus: str, category: str) -> list[str]:
-    applicable = {
-        "GOODS": _GOODS_MATERIAL,
-        "SERVICES": _SERVICE_MATERIAL,
-        "WORKS": _WORKS_MATERIAL,
-    }[category]
-    unsupported: list[str] = []
-    for theme in applicable:
-        if _mentions(text, theme) and not _supported(corpus, theme):
-            unsupported.append(theme)
-    # Goods-only concepts must never leak into works/services unless evidence
-    # explicitly contains them.
-    if category != "GOODS":
-        for theme in _GOODS_MATERIAL - {"delivery_deadline"}:
-            if _mentions(text, theme) and not _supported(corpus, theme):
-                unsupported.append(theme)
-    # Software assumptions are permitted only when the evidence says software.
-    if _mentions(text, "software") and not _supported(corpus, "software"):
-        unsupported.append("software")
-    return list(dict.fromkeys(unsupported))
+def _matches(text: str, patterns: Iterable[str]) -> bool:
+    return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
 
 
-def _ground_list(values: Iterable[Any], *, corpus: str, category: str) -> list[str]:
+def _mentioned_themes(text: str) -> list[str]:
+    lowered = _clean(text).lower()
+    return [
+        theme
+        for theme, spec in _THEME_SPECS.items()
+        if _matches(lowered, spec["detect"])
+    ]
+
+
+def _evidence_supports(corpus: str, theme: str) -> bool:
+    return _matches(corpus, _THEME_SPECS[theme]["evidence"])
+
+
+def _unsupported_themes(text: str, *, corpus: str) -> list[str]:
+    if _clean(text).startswith("INSUFFICIENT_EVIDENCE:"):
+        return []
+    return [
+        theme
+        for theme in _mentioned_themes(text)
+        if not _evidence_supports(corpus, theme)
+    ]
+
+
+def _insufficient(theme_or_label: str) -> str:
+    label = _THEME_LABELS.get(theme_or_label, theme_or_label)
+    return (
+        f"INSUFFICIENT_EVIDENCE: {label} — "
+        "первичные документы не подтверждают это условие."
+    )
+
+
+def _ground_list(values: Iterable[Any], *, corpus: str) -> list[str]:
     grounded: list[str] = []
-    insufficient_seen: set[str] = set()
+    seen_missing: set[str] = set()
     for raw in values:
         text = _clean(raw)
         if not text:
             continue
-        unsupported = _unsupported_themes(text, corpus=corpus, category=category)
+        unsupported = _unsupported_themes(text, corpus=corpus)
         if not unsupported:
             grounded.append(text)
             continue
         for theme in unsupported:
-            if theme in insufficient_seen:
+            if theme in seen_missing:
                 continue
             grounded.append(_insufficient(theme))
-            insufficient_seen.add(theme)
+            seen_missing.add(theme)
     return list(dict.fromkeys(grounded))
 
 
-def _build_goods_requirement_rows(documents: list[Any]) -> list[dict[str, str]]:
-    """Retain extracted item rows; drop fabricated generic requirement rows."""
-    rows = _ORIGINAL_GOODS_REQUIREMENTS(documents)
-    return [
-        dict(row)
-        for row in rows
-        if _clean(row.get("source")).lower() != "техническое задание"
-    ][:12]
-
-
-def _build_goods_questions(documents: list[Any]) -> list[str]:
-    corpus = _source_corpus(documents)
-    items = _legacy._collect_goods_supply_items_from_documents(documents)
-    questions = [
-        f"Подтверждаете поставку {item.name} в объёме {item.quantity or 'не указано'} {item.unit or ''}?".strip()
-        for item in items[:6]
-    ]
-    source_bound = (
-        ("normative", "Уточните подтверждение требований ГОСТ/ТУ, указанных в документации."),
-        ("quality_documents", "Уточните комплект документов качества, прямо требуемый документацией."),
-        ("delivery_deadline", "Подтвердите срок поставки/исполнения, указанный в документации."),
-        ("delivery_logistics", "Подтвердите условия доставки, указанные в документации."),
-        ("unloading", "Подтвердите условие разгрузки, указанное в документации."),
-        ("analog", "Уточните соответствие условиям об эквиваленте/аналоге из документации."),
-        ("manufacturer", "Уточните сведения о производителе/стране происхождения, требуемые документацией."),
-    )
-    for theme, question in source_bound:
-        if _supported(corpus, theme):
-            questions.append(question)
-    if not questions:
-        questions.append(
-            "INSUFFICIENT_EVIDENCE: товарные позиции и материальные коммерческие "
-            "условия не извлечены; сначала сверить первичные документы."
-        )
-    return _legacy._dedupe_text_items(questions)
-
-
-def _build_goods_rfq_payload(metadata: dict[str, Any], documents: list[Any]) -> dict[str, Any]:
-    payload = dict(_ORIGINAL_GOODS_RFQ(metadata, documents))
-    corpus = _source_corpus(documents)
-    sections = ["Позиции поставки, количество и цена"]
-    optional = (
-        ("normative", "Требования ГОСТ/ТУ из документации"),
-        ("quality_documents", "Документы качества из документации"),
-        ("delivery_deadline", "Срок поставки/исполнения из документации"),
-        ("delivery_logistics", "Условия доставки из документации"),
-        ("unloading", "Условие разгрузки из документации"),
-        ("analog", "Эквиваленты/аналоги в пределах условий документации"),
-        ("manufacturer", "Производитель/страна происхождения по документации"),
-    )
-    for theme, section in optional:
-        if _supported(corpus, theme):
-            sections.append(section)
-    payload["sections"] = sections
-    payload["grounding_status"] = "source_bound"
-    return payload
-
-
-def _dedupe_metrics(items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for item in items:
-        key = repr(sorted((str(key), repr(value)) for key, value in item.items()))
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append(item)
-    return result
-
-
-def _build_goods_economics_payload(
-    metadata: dict[str, Any],
-    documents: list[Any],
-    analysis_mode: str,
-    economics: dict[str, Any] | None,
-) -> dict[str, Any]:
-    payload = dict(
-        _ORIGINAL_GOODS_ECONOMICS(metadata, documents, analysis_mode, economics)
-    )
-    corpus = _source_corpus(documents)
-    payload["drivers"] = _ground_list(
-        payload.get("drivers", []),
-        corpus=corpus,
-        category="GOODS",
-    )
-    payload["manual_checks"] = _ground_list(
-        payload.get("manual_checks", []),
-        corpus=corpus,
-        category="GOODS",
-    )
-    metrics: list[dict[str, Any]] = []
-    insufficient_seen: set[str] = set()
-    for metric in payload.get("metrics", []):
-        if not isinstance(metric, dict):
-            continue
-        candidate = f"{metric.get('label', '')}: {metric.get('value', '')}"
-        unsupported = _unsupported_themes(
-            candidate,
-            corpus=corpus,
-            category="GOODS",
-        )
-        if unsupported:
-            for theme in unsupported:
-                if theme in insufficient_seen:
-                    continue
-                metrics.append(
-                    {"label": "Недостаточно данных", "value": _insufficient(theme)}
-                )
-                insufficient_seen.add(theme)
-            continue
-        copied = dict(metric)
-        label = _clean(copied.get("label")).lower()
-        if label == "общий объём":
-            copied["label"] = "Подтверждённый объём позиций с единицей «м»"
-        if "нмцк на метр" in label:
-            copied["label"] = "Арифметический ориентир НМЦК на единицу «м»"
-        metrics.append(copied)
-    payload["metrics"] = _dedupe_metrics(metrics)
-    payload["grounding_status"] = "source_bound"
-    return payload
-
-
-def _sanitize_overview(values: Iterable[Any], *, corpus: str, category: str) -> list[str]:
-    grounded: list[str] = []
-    for raw in values:
-        text = _clean(raw)
+def _supporting_document_labels(documents: Iterable[Any], claim: str) -> list[str]:
+    themes = _mentioned_themes(claim)
+    labels: list[str] = []
+    for document in documents:
+        text = _clean(getattr(document, "text", "")).lower()
         if not text:
             continue
+        if themes and all(_evidence_supports(text, theme) for theme in themes):
+            label = _clean(getattr(document, "display_name", "")) or "source_document"
+            labels.append(label)
+    return list(dict.fromkeys(labels))
+
+
+def _sanitize_preliminary(result: dict[str, Any], *, corpus: str) -> dict[str, Any]:
+    category = _category(result.get("procurement_kind"))
+    for field in (
+        "overview",
+        "compliance_highlights",
+        "delivery_model",
+        "contract_highlights",
+        "next_actions",
+    ):
+        result[field] = _ground_list(result.get(field, []), corpus=corpus)
+
+    overview: list[str] = []
+    for text in result.get("overview", []):
         if (
             category == "GOODS"
             and re.search(r"общий\s+объ[её]м\s+кабел[яьи]/?провод", text, re.IGNORECASE)
@@ -299,65 +261,27 @@ def _sanitize_overview(values: Iterable[Any], *, corpus: str, category: str) -> 
         ):
             match = re.search(r"([\d\s.,]+)\s*м\b", text)
             if match:
-                grounded.append(
-                    f"Подтверждённый объём позиций с единицей «м»: {_clean(match.group(1))} м."
+                overview.append(
+                    "Подтверждённый объём позиций с единицей «м»: "
+                    f"{_clean(match.group(1))} м."
                 )
             continue
-        unsupported = _unsupported_themes(
-            text,
-            corpus=corpus,
-            category=category,
-        )
-        if unsupported:
-            grounded.extend(_insufficient(theme) for theme in unsupported)
-        else:
-            grounded.append(text)
-    return list(dict.fromkeys(grounded))
+        overview.append(text)
+    result["overview"] = list(dict.fromkeys(overview))
 
-
-def _build_preliminary_procurement_analysis(
-    *,
-    metadata: dict[str, Any],
-    documents: list[Any],
-    technical_spec_text: str,
-    contract_draft_text: str,
-    notice_text: str,
-) -> dict[str, Any]:
-    result = dict(
-        _ORIGINAL_PRELIMINARY(
-            metadata=metadata,
-            documents=documents,
-            technical_spec_text=technical_spec_text,
-            contract_draft_text=contract_draft_text,
-            notice_text=notice_text,
-        )
-    )
-    corpus = _source_corpus(
-        documents,
-        technical_spec_text,
-        contract_draft_text,
-        notice_text,
-    )
-    category = _category(result.get("procurement_kind"))
-    result["overview"] = _sanitize_overview(
-        result.get("overview", []),
-        corpus=corpus,
-        category=category,
-    )
-    for field in (
-        "compliance_highlights",
-        "delivery_model",
-        "contract_highlights",
-        "next_actions",
+    software_themes = {
+        "software",
+        "integration",
+        "module",
+        "license",
+        "medical",
+        "smev",
+        "ern",
+        "defense_data",
+    }
+    if category == "WORKS" and not any(
+        _evidence_supports(corpus, theme) for theme in software_themes
     ):
-        result[field] = _ground_list(
-            result.get(field, []),
-            corpus=corpus,
-            category=category,
-        )
-
-    # Generic works previously inherited a software-modification narrative.
-    if category == "WORKS" and not _supported(corpus, "software"):
         result["compliance_highlights"] = [
             _insufficient("квалификационные и обязательные требования к исполнителю")
         ]
@@ -387,25 +311,287 @@ def _build_preliminary_procurement_analysis(
     return result
 
 
+def _build_preliminary_procurement_analysis(
+    *,
+    metadata: dict[str, Any],
+    documents: list[Any],
+    technical_spec_text: str,
+    contract_draft_text: str,
+    notice_text: str,
+) -> dict[str, Any]:
+    result = dict(
+        _ORIGINAL_PRELIMINARY(
+            metadata=metadata,
+            documents=documents,
+            technical_spec_text=technical_spec_text,
+            contract_draft_text=contract_draft_text,
+            notice_text=notice_text,
+        )
+    )
+    corpus = _source_corpus(documents, technical_spec_text, contract_draft_text, notice_text)
+    return _sanitize_preliminary(result, corpus=corpus)
+
+
+def _sanitize_requirement_rows(
+    rows: Iterable[Any],
+    *,
+    documents: list[Any],
+    corpus: str,
+) -> list[dict[str, Any]]:
+    grounded: list[dict[str, Any]] = []
+    for raw in rows:
+        if not isinstance(raw, dict):
+            continue
+        row = dict(raw)
+        claim = f"{row.get('title', '')}. {row.get('detail', '')}"
+        unsupported = _unsupported_themes(claim, corpus=corpus)
+        generic_title = _clean(row.get("title")).lower()
+        fake_generic_source = (
+            _clean(row.get("source")).lower() == "техническое задание"
+            and generic_title in _HARDCODED_GENERIC_REQUIREMENT_TITLES
+        )
+        if unsupported:
+            continue
+        if fake_generic_source:
+            labels = _supporting_document_labels(documents, claim)
+            if not labels:
+                continue
+            row["source"] = ", ".join(labels)
+        grounded.append(row)
+    return grounded
+
+
+def _sanitize_economics(payload: dict[str, Any], *, corpus: str) -> dict[str, Any]:
+    payload["drivers"] = _ground_list(payload.get("drivers", []), corpus=corpus)
+    payload["manual_checks"] = _ground_list(payload.get("manual_checks", []), corpus=corpus)
+    metrics: list[dict[str, Any]] = []
+    missing_seen: set[str] = set()
+    for raw in payload.get("metrics", []):
+        if not isinstance(raw, dict):
+            continue
+        metric = dict(raw)
+        candidate = f"{metric.get('label', '')}: {metric.get('value', '')}"
+        unsupported = _unsupported_themes(candidate, corpus=corpus)
+        if unsupported:
+            for theme in unsupported:
+                if theme in missing_seen:
+                    continue
+                metrics.append({"label": "Недостаточно данных", "value": _insufficient(theme)})
+                missing_seen.add(theme)
+            continue
+        label = _clean(metric.get("label")).lower()
+        if label == "общий объём":
+            metric["label"] = "Подтверждённый объём позиций с единицей «м»"
+        if "нмцк на метр" in label:
+            metric["label"] = "Арифметический ориентир НМЦК на единицу «м»"
+        metrics.append(metric)
+    payload["metrics"] = metrics
+    payload["grounding_status"] = "source_bound"
+    return payload
+
+
+def _sanitize_risks(payload: dict[str, Any], *, corpus: str) -> dict[str, Any]:
+    risks: list[dict[str, Any]] = []
+    missing_seen: set[str] = set()
+    for raw in payload.get("risks", []):
+        if not isinstance(raw, dict):
+            continue
+        risk = dict(raw)
+        combined = " ".join(
+            _clean(risk.get(key))
+            for key in ("risk", "impact", "mitigation")
+            if _clean(risk.get(key))
+        )
+        unsupported = _unsupported_themes(combined, corpus=corpus)
+        if not unsupported:
+            risks.append(risk)
+            continue
+        for theme in unsupported:
+            if theme in missing_seen:
+                continue
+            risks.append(
+                {
+                    "risk": _insufficient(theme),
+                    "severity": "needs_review",
+                    "impact": "Материальный риск нельзя оценить без подтверждения первичным документом.",
+                    "mitigation": "Проверить первичные документы вручную.",
+                    "risk_id": f"insufficient-evidence-{theme}",
+                    "category": "source_completeness",
+                    "evidence_ids": [],
+                    "evidence_locators": [],
+                    "status": "requires_review",
+                }
+            )
+            missing_seen.add(theme)
+    payload["risks"] = risks or [
+        {
+            "risk": _insufficient("материальные риски"),
+            "severity": "needs_review",
+            "impact": "Недостаточно подтверждённых данных для предметного риск-вывода.",
+            "mitigation": "Проверить первичные документы вручную.",
+            "risk_id": "insufficient-evidence-material-risks",
+            "category": "source_completeness",
+            "evidence_ids": [],
+            "evidence_locators": [],
+            "status": "requires_review",
+        }
+    ]
+    payload["manual_checks"] = _ground_list(payload.get("manual_checks", []), corpus=corpus)
+    payload["summary"] = (
+        "Риски ограничены утверждениями, подтверждёнными evidence; "
+        "неподтверждённые материальные условия помечены INSUFFICIENT_EVIDENCE."
+    )
+    return payload
+
+
+def _sanitize_fallback_outputs(
+    outputs: dict[str, Any],
+    *,
+    documents: list[Any],
+    corpus: str,
+    category: str,
+) -> dict[str, Any]:
+    requirements = outputs.get("requirements")
+    if isinstance(requirements, dict):
+        requirements["requirements"] = _sanitize_requirement_rows(
+            requirements.get("requirements", []),
+            documents=documents,
+            corpus=corpus,
+        )
+        context = requirements.get("analysis_context")
+        if isinstance(context, dict):
+            context["fallback_category"] = category
+            context["grounding_policy"] = "source_bound_v1"
+
+    questions = outputs.get("supplier_questions")
+    if isinstance(questions, dict):
+        questions["questions"] = _ground_list(questions.get("questions", []), corpus=corpus) or [
+            _insufficient("вопросы поставщику")
+        ]
+        questions["ambiguities"] = _ground_list(questions.get("ambiguities", []), corpus=corpus)
+        questions["grounding_status"] = "source_bound"
+
+    rfq = outputs.get("rfq_draft")
+    if isinstance(rfq, dict):
+        rfq["sections"] = _ground_list(rfq.get("sections", []), corpus=corpus) or [
+            _insufficient("секции RFQ")
+        ]
+        rfq["grounding_status"] = "source_bound"
+
+    economics = outputs.get("economics")
+    if isinstance(economics, dict):
+        _sanitize_economics(economics, corpus=corpus)
+
+    risks = outputs.get("contract_risks")
+    if isinstance(risks, dict):
+        _sanitize_risks(risks, corpus=corpus)
+
+    recommendation = outputs.get("final_recommendation")
+    if isinstance(recommendation, dict):
+        recommendation["rationale"] = _ground_list(recommendation.get("rationale", []), corpus=corpus) or [
+            _insufficient("основание рекомендации")
+        ]
+        if isinstance(requirements, dict):
+            recommendation["key_requirements"] = [
+                row.get("title", "")
+                for row in requirements.get("requirements", [])[:4]
+                if isinstance(row, dict) and row.get("title")
+            ] or ["Проверка комплектности и evidence"]
+        if isinstance(questions, dict):
+            recommendation["open_questions"] = questions.get("questions", [])[:3]
+        if isinstance(risks, dict):
+            recommendation["risks"] = [
+                row.get("risk", "")
+                for row in risks.get("risks", [])[:4]
+                if isinstance(row, dict) and row.get("risk")
+            ]
+        if isinstance(economics, dict):
+            recommendation["economics"] = [
+                f"{row.get('label')}: {row.get('value')}"
+                for row in economics.get("metrics", [])
+                if isinstance(row, dict)
+            ]
+        recommendation["grounding_status"] = "source_bound"
+        recommendation["fallback_category"] = category
+
+    trace = outputs.get("trace")
+    if isinstance(trace, dict):
+        if isinstance(recommendation, dict):
+            trace["decision_factors"] = recommendation.get("rationale", [])
+        trace["grounding_policy"] = "source_bound_v1"
+        trace["fallback_category"] = category
+
+    summary = outputs.get("tender_summary")
+    if isinstance(summary, dict):
+        summary["grounding_policy"] = "source_bound_v1"
+        summary["fallback_category"] = category
+
+    return outputs
+
+
+def _build_output_payloads(
+    *,
+    metadata: dict[str, Any],
+    documents: list[Any],
+    analysis_mode: str,
+    requirements: dict[str, Any],
+    calibrated_risks: list[dict[str, Any]],
+    supplier_questions: list[dict[str, Any]],
+    tkp_comparison: dict[str, Any] | None,
+    economics: dict[str, Any] | None,
+    bid_decision: dict[str, Any] | None,
+    core_complete: bool,
+    quote_inputs_present: bool,
+) -> dict[str, dict[str, Any]]:
+    outputs = deepcopy(
+        _ORIGINAL_OUTPUT_PAYLOADS(
+            metadata=metadata,
+            documents=documents,
+            analysis_mode=analysis_mode,
+            requirements=requirements,
+            calibrated_risks=calibrated_risks,
+            supplier_questions=supplier_questions,
+            tkp_comparison=tkp_comparison,
+            economics=economics,
+            bid_decision=bid_decision,
+            core_complete=core_complete,
+            quote_inputs_present=quote_inputs_present,
+        )
+    )
+    if analysis_mode != "fallback_deterministic_adapter":
+        return outputs
+
+    technical_spec_text = _legacy._collect_role_text(documents, "technical_spec")
+    contract_draft_text = _legacy._collect_role_text(documents, "contract_draft")
+    notice_text = (
+        _legacy._collect_role_text(documents, "notice")
+        or _legacy._collect_role_text(documents, "supporting")
+        or _clean(metadata.get("tender_title"))
+    )
+    corpus = _source_corpus(documents, technical_spec_text, contract_draft_text, notice_text)
+    preliminary = (
+        outputs.get("requirements", {}).get("preliminary_analysis", {})
+        if isinstance(outputs.get("requirements"), dict)
+        else {}
+    )
+    category = _category(preliminary.get("procurement_kind") if isinstance(preliminary, dict) else None)
+    return _sanitize_fallback_outputs(
+        outputs,
+        documents=documents,
+        corpus=corpus,
+        category=category,
+    )
+
+
 def install() -> None:
-    """Install source-bound deterministic builders exactly once."""
+    """Install D04 source-bound wrappers exactly once."""
     global _INSTALLED
     global _ORIGINAL_PRELIMINARY
-    global _ORIGINAL_GOODS_REQUIREMENTS
-    global _ORIGINAL_GOODS_RFQ
-    global _ORIGINAL_GOODS_ECONOMICS
+    global _ORIGINAL_OUTPUT_PAYLOADS
     if _INSTALLED:
         return
-    # Capture after earlier compatibility layers have already installed.
     _ORIGINAL_PRELIMINARY = _legacy._build_preliminary_procurement_analysis
-    _ORIGINAL_GOODS_REQUIREMENTS = _legacy._build_goods_requirement_rows
-    _ORIGINAL_GOODS_RFQ = _legacy._build_goods_rfq_payload
-    _ORIGINAL_GOODS_ECONOMICS = _legacy._build_goods_economics_payload
-    _legacy._build_goods_requirement_rows = _build_goods_requirement_rows
-    _legacy._build_goods_questions = _build_goods_questions
-    _legacy._build_goods_rfq_payload = _build_goods_rfq_payload
-    _legacy._build_goods_economics_payload = _build_goods_economics_payload
-    _legacy._build_preliminary_procurement_analysis = (
-        _build_preliminary_procurement_analysis
-    )
+    _ORIGINAL_OUTPUT_PAYLOADS = _legacy._build_output_payloads
+    _legacy._build_preliminary_procurement_analysis = _build_preliminary_procurement_analysis
+    _legacy._build_output_payloads = _build_output_payloads
     _INSTALLED = True
