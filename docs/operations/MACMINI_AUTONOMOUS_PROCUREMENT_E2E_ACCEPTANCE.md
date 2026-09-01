@@ -2,20 +2,32 @@
 
 Date: 2026-09-01
 Status: PASS
-PR: #20
+Canonical merge PR: #21
+Superseded draft PR: #20
 
 ## Runtime baseline
 
 Pre-commit runtime HEAD:
 `f6e9e23f1150972afaa87eeaed522069f49bf34b`
 
-The successful runtime included uncommitted repository-owned corrections. This
-final commit places those corrections under source control.
+The successful runtime included uncommitted repository-owned corrections. The
+source-controlled runtime acceptance commit places those corrections under source control:
+
+`155f97e563206993f2a315b4e47c9d1391538781`
+
+Canonical merge commit on `main`:
+
+`b07d4eff59c5657dfd6f261437330bfb42b49828`
 
 ## Tests
 
 Focused final regression suite:
-`54 passed`
+`54 passed, 9 warnings`
+
+Repository secret scan:
+`clean`
+
+CI run `#278` completed `SUCCESS` on the exact accepted source head before merge.
 
 ## Product transport
 
