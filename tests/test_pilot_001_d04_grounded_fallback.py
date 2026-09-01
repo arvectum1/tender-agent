@@ -74,10 +74,14 @@ def test_d04_generic_works_preliminary_does_not_inherit_software_template():
     rendered = json.dumps(result, ensure_ascii=False).lower()
 
     assert result["grounded_fallback_category"] == "WORKS"
+    assert result["grounding_policy"] == "source_bound_v1"
     assert "модифицированный модуль" not in rendered
     assert "интеграционного контура заказчика" not in rendered
     assert "передаче лицензии" not in rendered
-    assert "INSUFFICIENT_EVIDENCE" in json.dumps(result, ensure_ascii=False)
+    # A clean source-bound fallback may have no unsupported material assertion
+    # left to replace with INSUFFICIENT_EVIDENCE; absence is safer than
+    # manufacturing a missing-condition warning.
+    assert result["insufficient_evidence"] == []
 
 
 def test_d04_source_backed_delivery_deadline_is_retained():
