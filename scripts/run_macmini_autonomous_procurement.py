@@ -19,6 +19,7 @@ import argparse
 import json
 import sys
 from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -108,11 +109,26 @@ class BackendClient:
         except URLError as exc:
             raise E2EBlocked("backend_unavailable", f"Tender Agent backend is unavailable: {exc.reason}") from exc
 
-    def search(self, *, query: str, law: str, max_results: int) -> dict[str, Any]:
+    def search(
+        self,
+        *,
+        query: str,
+        law: str,
+        max_results: int,
+        date_from: str,
+        date_to: str,
+    ) -> dict[str, Any]:
         return self._json(
             "POST",
             "/api/demo/tender-agent/procurement/public-44fz-search",
-            form={"query": query, "law": law, "max_results": max_results, "page_size": max_results},
+            form={
+                "query": query,
+                "law": law,
+                "max_results": max_results,
+                "page_size": max_results,
+                "date_from": date_from,
+                "date_to": date_to,
+            },
         )
 
     def handoff(self, selection: Selection, *, law: str) -> dict[str, Any]:
@@ -227,6 +243,11 @@ def _llm_summary(run_payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _recent_publication_window(today: date | None = None) -> tuple[str, str]:
+    end = today or datetime.now(UTC).date()
+    return ((end - timedelta(days=3)).isoformat(), end.isoformat())
+
+
 def execute(
     client: BackendClient,
     *,
@@ -236,7 +257,14 @@ def execute(
     min_relevance: float,
     output_dir: Path,
 ) -> dict[str, Any]:
-    search = client.search(query=query, law=law, max_results=max_results)
+    date_from, date_to = _recent_publication_window()
+    search = client.search(
+        query=query,
+        law=law,
+        max_results=max_results,
+        date_from=date_from,
+        date_to=date_to,
+    )
     outcome = str(search.get("outcome") or "")
     cards = search.get("cards") or []
     if outcome != "success_with_results" or not isinstance(cards, list) or not cards:
@@ -307,6 +335,8 @@ def execute(
             "source": search.get("source"),
             "returned_count": search.get("returned_count"),
             "eis_pages_fetched": search.get("eis_pages_fetched"),
+            "publication_date_from": date_from,
+            "publication_date_to": date_to,
         },
         "selection": {
             "method": "deterministic_highest_relevance",

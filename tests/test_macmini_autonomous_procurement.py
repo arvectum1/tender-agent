@@ -1,3 +1,4 @@
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -5,6 +6,7 @@ import pytest
 from scripts.run_macmini_autonomous_procurement import (
     E2EBlocked,
     Selection,
+    _recent_publication_window,
     choose_candidate,
     execute,
 )
@@ -19,7 +21,7 @@ class FakeClient:
         self.analyze_calls = 0
         self.selected: Selection | None = None
 
-    def search(self, *, query: str, law: str, max_results: int):
+    def search(self, *, query: str, law: str, max_results: int, date_from: str, date_to: str):
         return {
             "outcome": "success_with_results",
             "source": "public_eis_html_44fz",
@@ -104,6 +106,13 @@ def test_choose_candidate_fails_closed_below_threshold():
         choose_candidate([{"reestr_number": "1", "relevance": {"score": 10}}], min_relevance=20)
 
     assert caught.value.code == "relevance_below_threshold"
+
+
+def test_recent_publication_window_is_bounded_to_three_days():
+    assert _recent_publication_window(today=date(2026, 9, 1)) == (
+        "2026-08-29",
+        "2026-09-01",
+    )
 
 
 def test_execute_completes_and_records_llm_provenance(tmp_path: Path):

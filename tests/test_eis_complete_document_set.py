@@ -123,6 +123,12 @@ def test_contract_security_attachment_overrides_stale_contract_draft_kind():
     )
 
 
+def test_electronic_contract_attachment_is_a_contract_draft():
+    assert _role_hint_from_procurement_attachment(
+        "Электронный контракт, сформированный с использованием ЕИС.docx"
+    ) == "contract_draft"
+
+
 def test_notice_attachment_parser_supports_elements_and_href_attributes():
     xml = """
     <epNotification>

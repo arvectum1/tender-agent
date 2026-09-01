@@ -278,6 +278,7 @@ def _default_transport(
             opener = create_urllib_opener(
                 current_url,
                 follow_redirects=False,
+                source_direct_connection=_is_public_eis_url(current_url),
             )
             response = opener.open(request, timeout=30)
         except HTTPError as exc:
@@ -378,6 +379,11 @@ def _validate_url(url: str, allowed_domains: set[str]) -> str | None:
     ):
         return "Домен вложения не входит в allowlist источника."
     return None
+
+
+def _is_public_eis_url(url: str) -> bool:
+    hostname = (urlparse(url).hostname or "").lower()
+    return hostname == "zakupki.gov.ru" or hostname.endswith(".zakupki.gov.ru")
 
 
 def _extension_for_attachment(attachment: ProcurementAttachment) -> str:
