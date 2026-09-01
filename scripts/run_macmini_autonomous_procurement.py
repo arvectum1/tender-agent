@@ -2,13 +2,13 @@
 """One-command Mac mini procurement discovery -> analysis -> report proof.
 
 This orchestrator deliberately composes the existing Tender Agent HTTP API rather
-than duplicating procurement logic.  It performs read-only public discovery,
+than duplicating procurement logic. It performs read-only public discovery,
 selects the strongest deterministic relevance candidate, hands the card to the
 existing intake path, lets the backend obtain public documentation and run the
 controlled analysis, then saves the generated HTML report locally.
 
 It does NOT submit applications, send email, use a digital signature, log into an
-ETP, bypass captcha, or mutate ARV-001 governance/evidence.  Source or document
+ETP, bypass captcha, or mutate ARV-001 governance/evidence. Source or document
 unavailability is a terminal, explicit result rather than a reason to fabricate a
 report.
 """
@@ -16,7 +16,9 @@ report.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
+import os
 import sys
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -28,6 +30,13 @@ from urllib.request import Request, urlopen
 
 
 READY_STATUSES = {"completed", "completed_with_warnings", "needs_review"}
+_AUTH_ENV_PAIRS = (
+    ("AI_CORP_PILOT_AUTH_USERNAME", "AI_CORP_PILOT_AUTH_PASSWORD"),
+    (
+        "AI_CORP_TENDER_PILOT_BASIC_AUTH_USERNAME",
+        "AI_CORP_TENDER_PILOT_BASIC_AUTH_PASSWORD",
+    ),
+)
 
 
 class E2EBlocked(RuntimeError):
@@ -45,10 +54,96 @@ class Selection:
     relevance_score: float
 
 
+def _auth_credentials_from_env() -> tuple[str, str] | None:
+    """Resolve local pilot Basic Auth without ever accepting a CLI password.
+
+    The backend supports the canonical AI_CORP_PILOT_AUTH_* names and the older
+    AI_CORP_TENDER_PILOT_BASIC_AUTH_* names. The runner mirrors that contract so
+    an operator can source the same local-only environment used by the backend.
+    Secret values are never included in result payloads or diagnostics.
+    """
+
+    for username_key, password_key in _AUTH_ENV_PAIRS:
+        username = os.environ.get(username_key)
+        password = os.environ.get(password_key)
+        if username is None and password is None:
+            continue
+        if not username or not password:
+            raise E2EBlocked(
+                "backend_auth_configuration_incomplete",
+                "Tender pilot Basic Auth environment is incomplete.",
+                details={
+                    "username_env": username_key,
+                    "password_env": password_key,
+                    "username_present": bool(username),
+                    "password_present": bool(password),
+                },
+            )
+        if ":" in username:
+            raise E2EBlocked(
+                "backend_auth_configuration_invalid",
+                "Tender pilot Basic Auth username must not contain ':'.",
+                details={"username_env": username_key},
+            )
+        return username, password
+    return None
+
+
+def _basic_auth_header(credentials: tuple[str, str] | None) -> str | None:
+    if credentials is None:
+        return None
+    username, password = credentials
+    token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+    return f"Basic {token}"
+
+
 class BackendClient:
-    def __init__(self, base_url: str, *, timeout_seconds: int = 240) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        timeout_seconds: int = 240,
+        basic_auth: tuple[str, str] | None = None,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
+        self._authorization_header = _basic_auth_header(basic_auth)
+
+    def _headers(self, accept: str, *, content_type: str | None = None) -> dict[str, str]:
+        headers = {"Accept": accept}
+        if content_type is not None:
+            headers["Content-Type"] = content_type
+        if self._authorization_header is not None:
+            headers["Authorization"] = self._authorization_header
+        return headers
+
+    def _raise_http_error(self, exc: HTTPError, *, path: str, report: bool = False) -> None:
+        payload_text = exc.read().decode("utf-8", errors="replace")
+        if exc.code == 401:
+            auth_configured = self._authorization_header is not None
+            raise E2EBlocked(
+                "backend_auth_rejected" if auth_configured else "backend_auth_required",
+                (
+                    "Tender Agent backend rejected the configured pilot authentication."
+                    if auth_configured
+                    else "Tender Agent backend requires pilot authentication."
+                ),
+                details={
+                    "path": path,
+                    "status": 401,
+                    "auth_configured": auth_configured,
+                    "body": payload_text[:2000],
+                },
+            ) from exc
+        raise E2EBlocked(
+            "report_http_error" if report else "backend_http_error",
+            (
+                f"Report endpoint returned HTTP {exc.code}"
+                if report
+                else f"Backend returned HTTP {exc.code} for {path}"
+            ),
+            details={"path": path, "status": exc.code, "body": payload_text[:2000]},
+        ) from exc
 
     def _json(
         self,
@@ -59,24 +154,25 @@ class BackendClient:
         form: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         body: bytes | None = None
-        headers = {"Accept": "application/json"}
+        content_type: str | None = None
         if payload is not None:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-            headers["Content-Type"] = "application/json"
+            content_type = "application/json"
         elif form is not None:
             body = urlencode({key: value for key, value in form.items() if value is not None}).encode("utf-8")
-            headers["Content-Type"] = "application/x-www-form-urlencoded"
-        request = Request(f"{self.base_url}{path}", data=body, headers=headers, method=method)
+            content_type = "application/x-www-form-urlencoded"
+        request = Request(
+            f"{self.base_url}{path}",
+            data=body,
+            headers=self._headers("application/json", content_type=content_type),
+            method=method,
+        )
         try:
             with urlopen(request, timeout=self.timeout_seconds) as response:  # noqa: S310 - localhost/operator URL by design
                 raw = response.read().decode("utf-8")
         except HTTPError as exc:
-            payload_text = exc.read().decode("utf-8", errors="replace")
-            raise E2EBlocked(
-                "backend_http_error",
-                f"Backend returned HTTP {exc.code} for {path}",
-                details={"path": path, "status": exc.code, "body": payload_text[:2000]},
-            ) from exc
+            self._raise_http_error(exc, path=path)
+            raise AssertionError("unreachable")
         except URLError as exc:
             raise E2EBlocked(
                 "backend_unavailable",
@@ -95,17 +191,17 @@ class BackendClient:
         return parsed
 
     def _text(self, path: str) -> str:
-        request = Request(f"{self.base_url}{path}", headers={"Accept": "text/html"}, method="GET")
+        request = Request(
+            f"{self.base_url}{path}",
+            headers=self._headers("text/html"),
+            method="GET",
+        )
         try:
             with urlopen(request, timeout=self.timeout_seconds) as response:  # noqa: S310 - localhost/operator URL by design
                 return response.read().decode("utf-8")
         except HTTPError as exc:
-            payload_text = exc.read().decode("utf-8", errors="replace")
-            raise E2EBlocked(
-                "report_http_error",
-                f"Report endpoint returned HTTP {exc.code}",
-                details={"path": path, "status": exc.code, "body": payload_text[:2000]},
-            ) from exc
+            self._raise_http_error(exc, path=path, report=True)
+            raise AssertionError("unreachable")
         except URLError as exc:
             raise E2EBlocked("backend_unavailable", f"Tender Agent backend is unavailable: {exc.reason}") from exc
 
@@ -387,8 +483,13 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    client = BackendClient(args.backend_url, timeout_seconds=args.timeout_seconds)
     try:
+        basic_auth = _auth_credentials_from_env()
+        client = BackendClient(
+            args.backend_url,
+            timeout_seconds=args.timeout_seconds,
+            basic_auth=basic_auth,
+        )
         result = execute(
             client,
             query=args.query,
