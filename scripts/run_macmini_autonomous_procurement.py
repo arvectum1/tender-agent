@@ -3,9 +3,10 @@
 
 This orchestrator deliberately composes the existing Tender Agent HTTP API rather
 than duplicating procurement logic. It performs read-only public discovery,
-selects the strongest deterministic relevance candidate, hands the card to the
-existing intake path, lets the backend obtain public documentation and run the
-controlled analysis, then saves the generated HTML report locally.
+selects the strongest deterministic relevance candidate that has not already
+been selected by this local runner, hands the card to the existing intake path,
+lets the backend obtain public documentation and run the controlled analysis,
+then saves the generated HTML report locally.
 
 It does NOT submit applications, send email, use a digital signature, log into an
 ETP, bypass captcha, or mutate ARV-001 governance/evidence. Source or document
@@ -23,13 +24,15 @@ import sys
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 
 READY_STATUSES = {"completed", "completed_with_warnings", "needs_review"}
+_SELECTION_HISTORY_FILENAME = "selection-history.json"
+_SELECTION_HISTORY_VERSION = 1
 _AUTH_ENV_PAIRS = (
     ("AI_CORP_PILOT_AUTH_USERNAME", "AI_CORP_PILOT_AUTH_PASSWORD"),
     (
@@ -55,14 +58,7 @@ class Selection:
 
 
 def _auth_credentials_from_env() -> tuple[str, str] | None:
-    """Resolve local pilot Basic Auth without ever accepting a CLI password.
-
-    The backend supports the canonical AI_CORP_PILOT_AUTH_* names and the older
-    AI_CORP_TENDER_PILOT_BASIC_AUTH_* names. The runner mirrors that contract so
-    an operator can source the same local-only environment used by the backend.
-    Secret values are never included in result payloads or diagnostics.
-    """
-
+    """Resolve local pilot Basic Auth without ever accepting a CLI password."""
     for username_key, password_key in _AUTH_ENV_PAIRS:
         username = os.environ.get(username_key)
         password = os.environ.get(password_key)
@@ -278,23 +274,120 @@ def _relevance_score(card: dict[str, Any]) -> float:
         return 0.0
 
 
-def choose_candidate(cards: list[dict[str, Any]], *, min_relevance: float) -> Selection:
-    candidates: list[Selection] = []
+def _normalize_registry_numbers(values: Iterable[str]) -> tuple[str, ...]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        value = str(raw or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return tuple(result)
+
+
+def _selection_history_path(output_dir: Path) -> Path:
+    return output_dir / _SELECTION_HISTORY_FILENAME
+
+
+def _load_selection_history(output_dir: Path) -> tuple[str, ...]:
+    path = _selection_history_path(output_dir)
+    if not path.exists():
+        return ()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise E2EBlocked(
+            "selection_history_invalid",
+            "Local procurement selection history cannot be read safely.",
+            details={"path": str(path)},
+        ) from exc
+    if not isinstance(payload, dict) or payload.get("version") != _SELECTION_HISTORY_VERSION:
+        raise E2EBlocked(
+            "selection_history_invalid",
+            "Local procurement selection history has an unsupported shape or version.",
+            details={"path": str(path)},
+        )
+    registry_numbers = payload.get("registry_numbers")
+    if not isinstance(registry_numbers, list) or not all(isinstance(item, str) for item in registry_numbers):
+        raise E2EBlocked(
+            "selection_history_invalid",
+            "Local procurement selection history contains invalid registry numbers.",
+            details={"path": str(path)},
+        )
+    return _normalize_registry_numbers(registry_numbers)
+
+
+def _record_selection_history(output_dir: Path, registry_number: str) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    existing = _load_selection_history(output_dir)
+    registry_numbers = _normalize_registry_numbers((*existing, registry_number))
+    path = _selection_history_path(output_dir)
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    payload = {
+        "version": _SELECTION_HISTORY_VERSION,
+        "registry_numbers": list(registry_numbers),
+    }
+    try:
+        temp_path.write_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temp_path.replace(path)
+    except OSError as exc:
+        raise E2EBlocked(
+            "selection_history_write_failed",
+            "Local procurement selection history could not be updated safely.",
+            details={"path": str(path)},
+        ) from exc
+    return path
+
+
+def choose_candidate(
+    cards: list[dict[str, Any]],
+    *,
+    min_relevance: float,
+    excluded_registry_numbers: Iterable[str] = (),
+) -> Selection:
+    excluded = set(_normalize_registry_numbers(excluded_registry_numbers))
+    by_registry: dict[str, Selection] = {}
+    discovered_registry_numbers: list[str] = []
     for card in cards:
         if not isinstance(card, dict):
             continue
         registry_number = _registry_number(card)
         if not registry_number:
             continue
-        candidates.append(
-            Selection(
-                card=card,
-                registry_number=registry_number,
-                relevance_score=_relevance_score(card),
-            )
+        discovered_registry_numbers.append(registry_number)
+        candidate = Selection(
+            card=card,
+            registry_number=registry_number,
+            relevance_score=_relevance_score(card),
         )
-    if not candidates:
+        previous = by_registry.get(registry_number)
+        if previous is None or (
+            candidate.relevance_score,
+            str(candidate.card.get("publication_date") or ""),
+        ) > (
+            previous.relevance_score,
+            str(previous.card.get("publication_date") or ""),
+        ):
+            by_registry[registry_number] = candidate
+
+    if not by_registry:
         raise E2EBlocked("no_usable_search_cards", "Search returned no cards with a registry number")
+
+    candidates = [item for registry, item in by_registry.items() if registry not in excluded]
+    if not candidates:
+        raise E2EBlocked(
+            "no_unique_search_cards",
+            "Search returned only procurements that were already selected or explicitly excluded.",
+            details={
+                "excluded_registry_numbers": sorted(excluded),
+                "discovered_registry_numbers": sorted(set(discovered_registry_numbers)),
+            },
+        )
+
     candidates.sort(
         key=lambda item: (
             item.relevance_score,
@@ -312,6 +405,7 @@ def choose_candidate(cards: list[dict[str, Any]], *, min_relevance: float) -> Se
                 "best_registry_number": selected.registry_number,
                 "best_title": selected.card.get("title"),
                 "best_relevance": selected.relevance_score,
+                "excluded_registry_numbers": sorted(excluded),
             },
         )
     return selected
@@ -352,7 +446,12 @@ def execute(
     max_results: int,
     min_relevance: float,
     output_dir: Path,
+    excluded_registry_numbers: Iterable[str] = (),
 ) -> dict[str, Any]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    history_registry_numbers = _load_selection_history(output_dir)
+    excluded = _normalize_registry_numbers((*history_registry_numbers, *excluded_registry_numbers))
+
     date_from, date_to = _recent_publication_window()
     search = client.search(
         query=query,
@@ -376,7 +475,13 @@ def execute(
             },
         )
 
-    selected = choose_candidate(cards, min_relevance=min_relevance)
+    selected = choose_candidate(
+        cards,
+        min_relevance=min_relevance,
+        excluded_registry_numbers=excluded,
+    )
+    history_path = _record_selection_history(output_dir, selected.registry_number)
+
     handoff = client.handoff(selected, law=law)
     run_id = str(handoff.get("run_id") or "").strip()
     if not run_id:
@@ -395,6 +500,8 @@ def execute(
             "Selected procurement does not have a complete automatically retrievable document set",
             details={
                 "run_id": run_id,
+                "registry_number": selected.registry_number,
+                "selection_history_path": str(history_path.resolve()),
                 "attachments_status": run_payload.get("attachments_status"),
                 "downloaded_files_count": run_payload.get("downloaded_files_count"),
                 "warnings": run_payload.get("warnings") or handoff.get("warnings") or [],
@@ -404,19 +511,28 @@ def execute(
         raise E2EBlocked(
             "analysis_failed",
             "Tender analysis failed safely",
-            details={"run_id": run_id, "warnings": run_payload.get("warnings") or []},
+            details={
+                "run_id": run_id,
+                "registry_number": selected.registry_number,
+                "selection_history_path": str(history_path.resolve()),
+                "warnings": run_payload.get("warnings") or [],
+            },
         )
     if status not in READY_STATUSES:
         raise E2EBlocked(
             "run_not_terminal",
             f"Run ended in unexpected status '{status or 'unknown'}'",
-            details={"run_id": run_id, "analysis_mode": run_payload.get("analysis_mode")},
+            details={
+                "run_id": run_id,
+                "registry_number": selected.registry_number,
+                "selection_history_path": str(history_path.resolve()),
+                "analysis_mode": run_payload.get("analysis_mode"),
+            },
         )
 
     html = client.report_html(run_id)
     if "<html" not in html.lower() and "<!doctype html" not in html.lower():
         raise E2EBlocked("report_invalid_html", "Report endpoint did not return HTML", details={"run_id": run_id})
-    output_dir.mkdir(parents=True, exist_ok=True)
     report_path = output_dir / f"{run_id}-report.html"
     report_path.write_text(html, encoding="utf-8")
 
@@ -435,7 +551,7 @@ def execute(
             "publication_date_to": date_to,
         },
         "selection": {
-            "method": "deterministic_highest_relevance",
+            "method": "deterministic_highest_relevance_unique",
             "registry_number": selected.registry_number,
             "title": selected.card.get("title"),
             "customer_name": selected.card.get("customer_name"),
@@ -445,6 +561,8 @@ def execute(
             "relevance_score": selected.relevance_score,
             "relevance_status": relevance.get("status"),
             "relevance_reasons": relevance.get("reasons") or [],
+            "excluded_registry_numbers": list(excluded),
+            "selection_history_path": str(history_path.resolve()),
         },
         "run": {
             "run_id": run_id,
@@ -478,6 +596,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-relevance", type=float, default=20.0)
     parser.add_argument("--timeout-seconds", type=int, default=240)
     parser.add_argument("--output-dir", type=Path, default=Path("company_agent_runs/macmini_autonomous_e2e"))
+    parser.add_argument(
+        "--exclude-registry-number",
+        action="append",
+        default=[],
+        help="Registry number to exclude from deterministic selection; may be repeated.",
+    )
     return parser
 
 
@@ -497,6 +621,7 @@ def main(argv: list[str] | None = None) -> int:
             max_results=max(1, min(args.max_results, 50)),
             min_relevance=max(0.0, min(args.min_relevance, 100.0)),
             output_dir=args.output_dir,
+            excluded_registry_numbers=args.exclude_registry_number,
         )
     except E2EBlocked as exc:
         print(
