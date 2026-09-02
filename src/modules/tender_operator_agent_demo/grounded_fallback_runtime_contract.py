@@ -44,13 +44,16 @@ class TenderOperatorUploadedRunResponse(
     runtime_analysis: TenderOperatorRuntimeAnalysisContract | None = None
 
 
-# This model is installed dynamically during package initialization. Rebuild it
-# while the concrete nested model is in scope so FastAPI/OpenAPI never sees an
-# unresolved forward reference.
+# The inherited legacy response itself uses postponed annotations such as
+# QuoteComparison. A dynamic subclass therefore needs both the original schema
+# module namespace and the new nested contract before FastAPI/OpenAPI can build
+# a TypeAdapter for it.
+_runtime_response_namespace = dict(vars(_schemas))
+_runtime_response_namespace["TenderOperatorRuntimeAnalysisContract"] = (
+    TenderOperatorRuntimeAnalysisContract
+)
 TenderOperatorUploadedRunResponse.model_rebuild(
-    _types_namespace={
-        "TenderOperatorRuntimeAnalysisContract": TenderOperatorRuntimeAnalysisContract,
-    }
+    _types_namespace=_runtime_response_namespace,
 )
 
 
