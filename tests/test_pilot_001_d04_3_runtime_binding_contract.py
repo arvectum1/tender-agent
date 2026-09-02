@@ -66,6 +66,7 @@ def test_d04_3_run_api_exposes_persisted_goods_evidence_contract(monkeypatch, tm
             "grounding_policy": "source_bound_v1",
             "fallback_category": "GOODS",
             "fallback_evidence_binding_policy": "goods_claim_evidence_binding_v1",
+            "fallback_evidence_matching_policy": "semantic_concrete_v1",
             "fallback_evidence_binding_count": 1,
             "fallback_evidence_binding_complete": True,
             "evidence_map": {
@@ -117,6 +118,7 @@ def test_d04_3_run_api_exposes_persisted_goods_evidence_contract(monkeypatch, tm
     assert runtime["grounding_policy"] == "source_bound_v1"
     assert runtime["fallback_category"] == "GOODS"
     assert runtime["fallback_evidence_binding_policy"] == "goods_claim_evidence_binding_v1"
+    assert runtime["fallback_evidence_matching_policy"] == "semantic_concrete_v1"
     assert runtime["fallback_evidence_binding_complete"] is True
     assert runtime["evidence_map"][evidence_id]["file_id"] == "FILE-GOODS-1"
     assert runtime["requirements"][0]["evidence_ids"] == [evidence_id]
