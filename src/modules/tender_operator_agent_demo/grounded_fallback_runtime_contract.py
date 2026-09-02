@@ -15,7 +15,6 @@ from src.modules.tender_operator_agent_demo import schemas as _schemas
 from src.modules.tender_operator_agent_demo import upload_service_legacy as _legacy
 from src.shared.types.common import APIModel
 
-
 _INSTALLED = False
 _ORIGINAL_GET_UPLOADED_DEMO_RUN: Any = None
 _RUNTIME_ANALYSIS_SCHEMA_VERSION = "tender_operator_runtime_analysis_v1"
@@ -29,6 +28,7 @@ class TenderOperatorRuntimeAnalysisContract(APIModel):
     grounding_policy: str | None = None
     fallback_category: str | None = None
     fallback_evidence_binding_policy: str | None = None
+    fallback_evidence_matching_policy: str | None = None
     fallback_evidence_binding_complete: bool | None = None
     evidence_map: dict[str, Any] = Field(default_factory=dict)
     requirements: list[dict[str, Any]] = Field(default_factory=list)
@@ -109,6 +109,11 @@ def _load_runtime_analysis(run_id: str) -> TenderOperatorRuntimeAnalysisContract
         fallback_evidence_binding_policy=(
             str(trace.get("fallback_evidence_binding_policy")).strip()
             if trace.get("fallback_evidence_binding_policy") is not None
+            else None
+        ),
+        fallback_evidence_matching_policy=(
+            str(trace.get("fallback_evidence_matching_policy")).strip()
+            if trace.get("fallback_evidence_matching_policy") is not None
             else None
         ),
         fallback_evidence_binding_complete=(
