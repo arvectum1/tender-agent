@@ -95,8 +95,16 @@ def test_d04_3_run_api_exposes_persisted_goods_evidence_contract(monkeypatch, tm
 
     app = FastAPI()
     app.include_router(router)
-    response = TestClient(app).get(f"/api/demo/tender-agent/runs/{run_id}")
+    client = TestClient(app)
 
+    # The production tampering harness performs an OpenAPI healthcheck. Guard
+    # the dynamic response model at that exact serialization boundary too.
+    openapi_response = client.get("/openapi.json")
+    assert openapi_response.status_code == 200
+    run_schema = openapi_response.json()["components"]["schemas"]["TenderOperatorUploadedRunResponse"]
+    assert "runtime_analysis" in run_schema["properties"]
+
+    response = client.get(f"/api/demo/tender-agent/runs/{run_id}")
     assert response.status_code == 200
     payload = response.json()
 
