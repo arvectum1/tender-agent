@@ -173,5 +173,6 @@ def storage_metrics_dict() -> dict:
         "storage_free_bytes": snap.filesystem_free_bytes,
         "storage_used_percent": snap.used_percent,
         "storage_state": snap.state.value,
+        "mount_verified": snap.mount_verified,
         "ingestion_allowed": snap.state not in (StorageState.INGESTION_PROTECTED, StorageState.STORAGE_UNKNOWN),
     }
