@@ -36,6 +36,12 @@ from src.modules.tender_operator_agent_demo.event_log import (
 )
 from src.modules.tender_operator_agent_demo.procurement_discovery import get_supplier_profile
 from src.modules.tender_operator_agent_demo.relevance_scoring import score_procurement_document_text
+from src.modules.tender_operator_agent_demo.goods_source_facts import (
+    build_goods_requirements_from_source_facts,
+    detect_procurement_richness,
+    extract_goods_source_facts,
+    semantic_procurement_role,
+)
 from src.modules.supplier_search.internet_supplier_search import search_suppliers
 from src.modules.supplier_search.yandex_search_client import YandexSearchClient
 from src.shared.config.settings import get_settings
@@ -2442,6 +2448,37 @@ def _collect_unmerged_source_items(documents: list[AnalyzedDocument]) -> list[Su
             extracted.extend(_extract_service_items_from_nmck_text(text, doc.display_name))
         if doc.extension == ".xml" or "purchasenotice" in text.lower() or "epnotification" in text.lower() or "purchaseobject" in text.lower():
             extracted.extend(_extract_supply_items_from_notification_xml(text, doc.display_name))
+    existing_names = {_normalize_supply_name_key(item.name) for item in extracted}
+    # Every text-bearing document is eligible. Specialized parsers above remain
+    # preferred; this bounded fallback only supplies missing, source-evidenced items.
+    for fact in extract_goods_source_facts(documents):
+        if fact.fact_type != "PRODUCT_ITEM":
+            continue
+        name = _normalize_supply_name(fact.value)
+        key = _normalize_supply_name_key(name)
+        if not _is_line_item_name(name) or key in existing_names:
+            continue
+        extracted.append(
+            SupplyItem(
+                item_no=None,
+                name=name,
+                quantity=None,
+                unit=None,
+                characteristics=[],
+                gost=[],
+                equivalent_allowed=None,
+                source_document=fact.source_document,
+                source_kind="source_fact",
+                confidence=fact.confidence,
+                raw_fragment=fact.excerpt,
+                source_documents=[fact.source_document],
+                quantity_status="not_specified",
+                source_row_number=fact.source_row_number,
+                evidence_id=fact.fact_id,
+                extraction_strategy=fact.extraction_strategy,
+            )
+        )
+        existing_names.add(key)
     return extracted
 
 
@@ -2568,40 +2605,7 @@ def _collect_goods_supply_items_from_documents(documents: list[AnalyzedDocument]
 
 
 def _build_goods_requirement_rows(documents: list[AnalyzedDocument]) -> list[dict[str, str]]:
-    items = _collect_goods_supply_items_from_documents(documents)
-    rows: list[dict[str, str]] = []
-    for item in items:
-        details = [f"{item.name} — {item.quantity or 'не указано'} {item.unit or ''}".strip()]
-        if item.gost:
-            details.append(", ".join(item.gost))
-        if item.characteristics:
-            details.append("; ".join(item.characteristics[:3]))
-        rows.append(
-            {
-                "title": f"{item.name} — {item.quantity or 'не указано'} {item.unit or ''}".strip(),
-                "detail": " | ".join(details),
-                "source": ", ".join(item.source_documents or [item.source_document]),
-                "type": "товарная позиция",
-                "priority": "high",
-            }
-        )
-    general_requirements = [
-        ("Соответствие ГОСТ / ТУ", "Товар должен соответствовать ГОСТ, ТУ и иной действующей нормативной документации.", "нормативное"),
-        ("Сертификаты и паспорт качества", "Нужны сертификаты, декларации или паспорт качества производителя по применимым позициям.", "документы качества"),
-        ("Маркировка и безопасность", "Маркировка и безопасность товара должны соответствовать обязательным требованиям.", "качество / безопасность"),
-        ("Доставка до заказчика", "Доставка и разгрузка до адреса заказчика должны быть включены и подтверждены поставщиком.", "логистика"),
-    ]
-    for title, detail, req_type in general_requirements:
-        rows.append(
-            {
-                "title": title,
-                "detail": detail,
-                "source": "Техническое задание",
-                "type": req_type,
-                "priority": "medium",
-            }
-        )
-    return rows[:12]
+    return build_goods_requirements_from_source_facts(extract_goods_source_facts(documents))[:24]
 
 
 def _build_goods_questions(documents: list[AnalyzedDocument]) -> list[str]:
@@ -3429,7 +3433,13 @@ def _build_output_payloads(
     elif _collect_supply_items(documents) and procurement_kind not in {"works", "services", "mixed"}:
         procurement_kind = "goods"
     grounded_requirement_rows = _build_document_grounded_requirements(documents, procurement_kind)
-    requirement_rows = grounded_requirement_rows or _extract_requirement_rows(requirements, core_complete, procurement_kind)
+    requirement_rows = (
+        grounded_requirement_rows
+        if procurement_kind == "goods"
+        else grounded_requirement_rows or _extract_requirement_rows(requirements, core_complete, procurement_kind)
+    )
+    source_facts = extract_goods_source_facts(documents) if procurement_kind == "goods" else []
+    rich_documents = [doc for doc in documents if doc.text and detect_procurement_richness(doc)]
     quote_files_present = quote_inputs_present
     output_warnings = list(metadata.get("warnings", []))
     preliminary_analysis = _build_preliminary_procurement_analysis(
@@ -3498,6 +3508,8 @@ def _build_output_payloads(
     }
     if procurement_kind == "goods" and _is_goods_supply_table_present(technical_spec_text) and not preliminary_analysis.get("spec_table", {}).get("rows"):
         output_warnings.append("Позиции поставки не извлечены из ТЗ/спецификации. Анализ неполный.")
+    if procurement_kind == "goods" and rich_documents and not source_facts:
+        output_warnings.append("SOURCE_EXTRACTION_LOW_RECALL: rich procurement documents produced no source facts.")
 
     tender_summary = {
         "run_id": metadata["run_id"],
@@ -3873,6 +3885,19 @@ def _build_output_payloads(
             "Нормализация Excel-таблиц использует deterministic parser + heuristics без LLM.",
             "Часть выводов требует ручного подтверждения по исходным файлам.",
         ],
+        "document_analysis_policy": "source_first_all_text_v1",
+        "document_role_policy": "content_aware_procurement_role_v1",
+        "requirements_generation_policy": "source_derived_goods_v1",
+        "source_extraction_summary": {
+            "documents_total": len(documents),
+            "text_bearing_documents": sum(bool(doc.text) for doc in documents),
+            "rich_documents": len(rich_documents),
+            "rich_documents_with_facts": len({fact.file_id for fact in source_facts if any(doc.file_id == fact.file_id for doc in rich_documents)}),
+            "source_facts_extracted": len(source_facts),
+            "source_derived_requirements": sum(bool(row.get("source_fact_id")) for row in requirement_rows) if procurement_kind == "goods" else 0,
+            "template_requirements": sum(not row.get("source_fact_id") for row in requirement_rows) if procurement_kind == "goods" else 0,
+            "semantic_roles": {doc.file_id: semantic_procurement_role(doc) for doc in documents if doc.text},
+        },
         "decision_factors": rationale,
         "overall_explanation": (
             "Агент использовал локально загруженные файлы, безопасное извлечение текста и документ-зависимый детерминированный анализ. "

@@ -30,6 +30,10 @@ class TenderOperatorRuntimeAnalysisContract(APIModel):
     fallback_evidence_binding_policy: str | None = None
     fallback_evidence_matching_policy: str | None = None
     fallback_evidence_binding_complete: bool | None = None
+    document_analysis_policy: str | None = None
+    document_role_policy: str | None = None
+    requirements_generation_policy: str | None = None
+    source_extraction_summary: dict[str, Any] = Field(default_factory=dict)
     evidence_map: dict[str, Any] = Field(default_factory=dict)
     requirements: list[dict[str, Any]] = Field(default_factory=list)
     analysis_context: dict[str, Any] = Field(default_factory=dict)
@@ -120,6 +124,14 @@ def _load_runtime_analysis(run_id: str) -> TenderOperatorRuntimeAnalysisContract
             bool(trace.get("fallback_evidence_binding_complete"))
             if "fallback_evidence_binding_complete" in trace
             else None
+        ),
+        document_analysis_policy=str(trace.get("document_analysis_policy") or "").strip() or None,
+        document_role_policy=str(trace.get("document_role_policy") or "").strip() or None,
+        requirements_generation_policy=str(trace.get("requirements_generation_policy") or "").strip() or None,
+        source_extraction_summary=(
+            dict(trace.get("source_extraction_summary"))
+            if isinstance(trace.get("source_extraction_summary"), dict)
+            else {}
         ),
         evidence_map=dict(evidence_map),
         requirements=requirement_rows,
