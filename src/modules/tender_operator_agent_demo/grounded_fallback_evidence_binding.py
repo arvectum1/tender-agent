@@ -431,6 +431,17 @@ def _best_candidate(row: dict[str, Any], candidates: list[EvidenceCandidate]) ->
     return scored[0][1]
 
 
+def _preferred_source_fact_candidate(row: dict[str, Any]) -> EvidenceCandidate | None:
+    """Use extraction-time provenance before searching broader document text."""
+    raw = row.get("evidence_candidate")
+    if not isinstance(raw, dict):
+        return None
+    values = {key: _clean(raw.get(key)) for key in ("evidence_id", "file_id", "source_document", "locator", "text")}
+    if not all(values.values()):
+        return None
+    return EvidenceCandidate(**values)
+
+
 def _excerpt(text: str, claim: str, limit: int = 320) -> str:
     clean = _clean(text)
     if len(clean) <= limit:
@@ -483,7 +494,14 @@ def _bind_requirement_rows(
         if not claim or claim.startswith(_INSUFFICIENT_TITLE):
             result.append(row)
             continue
-        match = _best_candidate(row, candidates)
+        preferred = _preferred_source_fact_candidate(row)
+        # The source fact remains subject to the same semantic anchor check,
+        # but never loses its exact line provenance to a broader chunk tie.
+        match = (
+            EvidenceMatch(candidate=preferred, excerpt=preferred.text)
+            if preferred and _semantic_anchors_supported(claim, preferred.text)
+            else _best_candidate(row, candidates)
+        )
         if match is None:
             result.append(_insufficient_row(row))
             continue
