@@ -2,12 +2,10 @@
 
 PILOT-001-D04.2 correctly persisted source-bound fallback outputs, but the
 canonical uploaded-run response rebuilt a narrow Pydantic projection and dropped
-``requirements.json`` / ``trace.json``.  Keep the legacy UI projection intact
+``requirements.json`` / ``trace.json``. Keep the legacy UI projection intact
 while adding one additive machine-readable runtime contract for acceptance and
 governance consumers.
 """
-
-from __future__ import annotations
 
 from typing import Any
 
@@ -44,6 +42,16 @@ class TenderOperatorUploadedRunResponse(
     """Backward-compatible run response with persisted machine provenance."""
 
     runtime_analysis: TenderOperatorRuntimeAnalysisContract | None = None
+
+
+# This model is installed dynamically during package initialization. Rebuild it
+# while the concrete nested model is in scope so FastAPI/OpenAPI never sees an
+# unresolved forward reference.
+TenderOperatorUploadedRunResponse.model_rebuild(
+    _types_namespace={
+        "TenderOperatorRuntimeAnalysisContract": TenderOperatorRuntimeAnalysisContract,
+    }
+)
 
 
 def _clean_category(value: Any) -> str | None:
@@ -134,7 +142,7 @@ def install() -> None:
 
     _ORIGINAL_GET_UPLOADED_DEMO_RUN = _legacy.get_uploaded_demo_run
 
-    # Router imports occur after package initialization.  Replacing both schema
+    # Router imports occur after package initialization. Replacing both schema
     # and legacy symbols makes FastAPI's response_model include runtime_analysis
     # instead of filtering the additive field away.
     _schemas.TenderOperatorUploadedRunResponse = TenderOperatorUploadedRunResponse
