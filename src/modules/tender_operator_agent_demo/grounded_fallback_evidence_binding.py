@@ -22,7 +22,7 @@ from src.modules.tender_operator_agent_demo import upload_service_legacy as _leg
 _INSTALLED = False
 _ORIGINAL_OUTPUT_PAYLOADS: Any = None
 _BINDING_POLICY = "goods_claim_evidence_binding_v1"
-_MATCHING_POLICY = "semantic_concrete_v1"
+_MATCHING_POLICY = "semantic_concrete_v2"
 _INSUFFICIENT_TITLE = "INSUFFICIENT_EVIDENCE"
 
 _STOPWORDS = {
@@ -54,6 +54,12 @@ class EvidenceCandidate:
     source_document: str
     locator: str
     text: str
+
+
+@dataclass(frozen=True)
+class EvidenceMatch:
+    candidate: EvidenceCandidate
+    excerpt: str
 
 
 def _clean(value: Any) -> str:
@@ -100,9 +106,66 @@ _STANDARD_ID_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _NUMBER_UNIT_PATTERN = re.compile(
-    r"(?<!\w)(\d+(?:[.,]\d+)?)\s*(%|кв\.\s*м|м²|м2|мм|см|м|квт|кВт|в|а|шт\.?|ед\.?|дн(?:я|ей)?|рабочих?\s+дн(?:я|ей)?|календарных?\s+дн(?:я|ей)?|месяц(?:ев|а)?|лет|года?|руб(?:лей)?|₽)?",
+    r"(?<!\w)(\d+(?:[.,]\d+)?)\s*(%|календарных?\s+дн(?:я|ей)?|рабочих?\s+дн(?:я|ей)?|кв\.\s*м|м²|м2|мм|см|квт|шт\.?|штук|ед\.?|единиц(?:а|ы)?|порт(?:а|ов)?|дн(?:я|ей)?|месяц(?:ев|а)?|лет|года?|руб(?:лей)?|₽|кб|мб|гб|тб|kib|mib|gib|tib|kb|mb|gb|tb|м|в|а)?",
     re.IGNORECASE,
 )
+_UNKNOWN_ATTACHED_UNIT_PATTERN = re.compile(
+    r"(?<!\w)(\d+(?:[.,]\d+)?)\s*([A-Za-zА-Яа-яЁё]+)",
+    re.IGNORECASE,
+)
+_UNIT_FAMILIES = {
+    "%": "%",
+    "кв м": "square_meters",
+    "м²": "square_meters",
+    "м2": "square_meters",
+    "мм": "millimeters",
+    "см": "centimeters",
+    "м": "meters",
+    "квт": "kilowatts",
+    "в": "volts",
+    "а": "amps",
+    "шт": "pieces",
+    "штук": "pieces",
+    "ед": "pieces",
+    "единица": "pieces",
+    "единицы": "pieces",
+    "единиц": "pieces",
+    "порт": "ports",
+    "порта": "ports",
+    "портов": "ports",
+    "дн": "days",
+    "дня": "days",
+    "дней": "days",
+    "рабочих дня": "working_days",
+    "рабочих дней": "working_days",
+    "календарных дня": "calendar_days",
+    "календарных дней": "calendar_days",
+    "месяц": "months",
+    "месяца": "months",
+    "месяцев": "months",
+    "лет": "years",
+    "года": "years",
+    "год": "years",
+    "руб": "rubles",
+    "рублей": "rubles",
+    "₽": "rubles",
+    "кб": "kilobytes",
+    "kb": "kilobytes",
+    "киб": "kibibytes",
+    "kib": "kibibytes",
+    "мб": "megabytes",
+    "mb": "megabytes",
+    "миб": "mebibytes",
+    "mib": "mebibytes",
+    "гб": "gigabytes",
+    "gb": "gigabytes",
+    "гиб": "gibibytes",
+    "gib": "gibibytes",
+    "тб": "terabytes",
+    "tb": "terabytes",
+    "тиб": "tebibytes",
+    "tib": "tebibytes",
+}
 _CONCEPT_GROUPS = (
     ("safety", ("безопасност", "пожарн", "электробезопасност", "сертификат", "декларац", "испытан", "класс защиты", "степен[ьи] защиты")),
     ("delivery", ("срок поставки", "место поставки", "доставк", "партия", "график поставки", "приемк", "приёмк", "разгруз")),
@@ -116,11 +179,27 @@ def _normalized_standard_ids(value: Any) -> set[str]:
     }
 
 
+def _canonical_unit(value: str) -> str:
+    normalized = re.sub(r"\s+", " ", value.lower().replace("ё", "е")).strip(" .")
+    return _UNIT_FAMILIES.get(normalized, normalized)
+
+
 def _number_units(value: Any) -> list[tuple[str, str, int]]:
     text = _STANDARD_ID_PATTERN.sub(" ", _clean(value))
     text = re.sub(r"\bip\s*\d{2}\b", " ", text, flags=re.IGNORECASE)
     text = text.replace(",", ".")
-    return [(number, re.sub(r"\s+", " ", unit.lower()).strip(" ."), match.start()) for match in _NUMBER_UNIT_PATTERN.finditer(text) for number, unit in [(match.group(1), match.group(2) or "")]]
+    anchors: list[tuple[str, str, int]] = []
+    for match in _NUMBER_UNIT_PATTERN.finditer(text):
+        number, raw_unit = match.group(1), match.group(2) or ""
+        unit = _canonical_unit(raw_unit) if raw_unit else ""
+        if not unit:
+            suffix = _UNKNOWN_ATTACHED_UNIT_PATTERN.match(text, match.start())
+            suffix_text = suffix.group(2) if suffix else ""
+            has_attached_letters = suffix and not text[suffix.start(2) - 1 : suffix.start(2)].isspace()
+            if suffix_text and (has_attached_letters or suffix_text.isupper() or suffix_text.isascii()):
+                unit = "unknown_unit"
+        anchors.append((number, unit, match.start()))
+    return anchors
 
 
 def _numeric_anchors_supported(claim: str, evidence: str) -> bool:
@@ -130,15 +209,24 @@ def _numeric_anchors_supported(claim: str, evidence: str) -> bool:
     evidence_numbers = _number_units(evidence)
     evidence_text = _normalize(evidence)
     for number, unit, position in claim_numbers:
-        matching = [(epos, eunit) for enumber, eunit, epos in evidence_numbers if enumber == number and (not unit or eunit == unit)]
+        if unit == "unknown_unit":
+            return False
+        matching = [
+            (epos, eunit)
+            for enumber, eunit, epos in evidence_numbers
+            if enumber == number and (not unit or eunit == unit)
+        ]
         if not matching:
             return False
         claim_context = _tokens(claim[max(0, position - 45) : position + 45]) - _GENERIC_TOKENS
-        if claim_context and not any(
-            claim_context & (_tokens(evidence[max(0, epos - 60) : epos + 60]) - _GENERIC_TOKENS)
-            for epos, _ in matching
-        ):
-            return False
+        if claim_context:
+            context_matches = [
+                len(claim_context & (_tokens(evidence[max(0, epos - 60) : epos + 60]) - _GENERIC_TOKENS))
+                for epos, _ in matching
+            ]
+            required_context = min(2, len(claim_context)) if unit else 1
+            if not context_matches or max(context_matches) < required_context:
+                return False
     return bool(evidence_text)
 
 
@@ -323,7 +411,7 @@ def _candidate_score(claim: str, candidate: EvidenceCandidate, source_hint: str)
     return score
 
 
-def _best_candidate(row: dict[str, Any], candidates: list[EvidenceCandidate]) -> EvidenceCandidate | None:
+def _best_candidate(row: dict[str, Any], candidates: list[EvidenceCandidate]) -> EvidenceMatch | None:
     claim = _row_claim(row)
     if not claim or claim.startswith(_INSUFFICIENT_TITLE):
         return None
@@ -335,11 +423,11 @@ def _best_candidate(row: dict[str, Any], candidates: list[EvidenceCandidate]) ->
             continue
         score = _candidate_score(claim, candidate, source_hint)
         if score:
-            scored.append((score, candidate))
+            scored.append((score, EvidenceMatch(candidate=candidate, excerpt=excerpt)))
     scored = [item for item in scored if item[0] > 0]
     if not scored:
         return None
-    scored.sort(key=lambda item: (item[0], item[1].evidence_id), reverse=True)
+    scored.sort(key=lambda item: (item[0], item[1].candidate.evidence_id), reverse=True)
     return scored[0][1]
 
 
@@ -348,7 +436,21 @@ def _excerpt(text: str, claim: str, limit: int = 320) -> str:
     if len(clean) <= limit:
         return clean
     lowered = clean.lower().replace("ё", "е")
-    positions = [lowered.find(token) for token in _tokens(claim) if lowered.find(token) >= 0]
+    positions = []
+    standard_match = _STANDARD_ID_PATTERN.search(clean)
+    if standard_match:
+        position = lowered.find(standard_match.group(0).lower().replace("ё", "е"))
+        if position >= 0:
+            positions.append(position)
+    claim_numbers = _number_units(claim)
+    evidence_numbers = _number_units(clean)
+    for number, unit, _ in claim_numbers:
+        if not unit or unit == "unknown_unit":
+            continue
+        for enumber, eunit, eposition in evidence_numbers:
+            if number == enumber and unit == eunit:
+                positions.append(eposition)
+    positions.extend(lowered.find(token) for token in _tokens(claim) if lowered.find(token) >= 0)
     start = max(0, min(positions) - 80) if positions else 0
     return clean[start : start + limit].strip()
 
@@ -381,10 +483,11 @@ def _bind_requirement_rows(
         if not claim or claim.startswith(_INSUFFICIENT_TITLE):
             result.append(row)
             continue
-        candidate = _best_candidate(row, candidates)
-        if candidate is None:
+        match = _best_candidate(row, candidates)
+        if match is None:
             result.append(_insufficient_row(row))
             continue
+        candidate = match.candidate
         row["evidence_ids"] = [candidate.evidence_id]
         row["source"] = candidate.source_document
         row["source_document"] = candidate.source_document
@@ -393,7 +496,7 @@ def _bind_requirement_rows(
             "file_id": candidate.file_id,
             "source_document": candidate.source_document,
             "locator": candidate.locator,
-            "excerpt": _excerpt(candidate.text, claim),
+            "excerpt": match.excerpt,
         }
         result.append(row)
     return result

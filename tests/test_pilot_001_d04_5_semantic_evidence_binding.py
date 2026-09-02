@@ -149,4 +149,4 @@ def test_semantic_matching_policy_is_traceable():
         _outputs(_row("Количество", "Количество товара: 10 штук")),
         documents=[_doc("Количество товара: 10 штук")],
     )
-    assert patched["trace"]["fallback_evidence_matching_policy"] == "semantic_concrete_v1"
+    assert patched["trace"]["fallback_evidence_matching_policy"] == "semantic_concrete_v2"
