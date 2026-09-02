@@ -18,9 +18,13 @@ from src.modules.tender_operator_agent_demo.grounded_fallback_followup import (
 from src.modules.tender_operator_agent_demo.grounded_fallback_evidence_binding import (
     install as _install_grounded_fallback_evidence_binding,
 )
+from src.modules.tender_operator_agent_demo.grounded_fallback_runtime_contract import (
+    install as _install_grounded_fallback_runtime_contract,
+)
 
 _install_decision_useful_runtime_patch()
 _install_decision_useful_output_patch()
 _install_grounded_fallback_patch()
 _install_grounded_fallback_followup()
 _install_grounded_fallback_evidence_binding()
+_install_grounded_fallback_runtime_contract()
