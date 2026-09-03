@@ -21,6 +21,9 @@ from src.modules.tender_operator_agent_demo.grounded_fallback_evidence_binding i
 from src.modules.tender_operator_agent_demo.grounded_fallback_runtime_contract import (
     install as _install_grounded_fallback_runtime_contract,
 )
+from src.modules.tender_operator_agent_demo.commercial_term_recall_patch import (
+    install as _install_commercial_term_recall_patch,
+)
 
 _install_decision_useful_runtime_patch()
 _install_decision_useful_output_patch()
@@ -28,3 +31,4 @@ _install_grounded_fallback_patch()
 _install_grounded_fallback_followup()
 _install_grounded_fallback_evidence_binding()
 _install_grounded_fallback_runtime_contract()
+_install_commercial_term_recall_patch()
