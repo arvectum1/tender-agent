@@ -44,8 +44,12 @@ def _title_primary_scope(metadata: dict[str, Any]) -> str | None:
 
 def _preliminary_with_explicit_scope(**kwargs: Any) -> dict[str, Any]:
     result = dict(_ORIGINAL_PRELIMINARY(**kwargs))
+    existing_kind = str(result.get("procurement_kind") or "").strip().lower()
     explicit = _title_primary_scope(kwargs.get("metadata") or {})
-    if explicit:
+    # D07 introduces a provenance-backed semantic scope.  Title heuristics are
+    # a compatibility fallback only: they must never overwrite a resolved
+    # canonical category such as rental/mixed/goods/services/works.
+    if explicit and existing_kind in {"", "unknown", "unresolved", "generic"}:
         result["procurement_kind"] = explicit
         result["grounded_fallback_category"] = _strict_category(explicit)
     else:
@@ -89,7 +93,7 @@ def install() -> None:
     _grounded._build_preliminary_procurement_analysis = _preliminary_with_explicit_scope
 
     # The legacy service was already pointed at the grounded wrapper. Replace it
-    # with this final wrapper so obvious works/services/goods titles correct a
-    # legacy misclassification before full fallback output sanitization runs.
+    # with this final wrapper so an unresolved legacy classification may use an
+    # obvious title, while a resolved D07 semantic scope remains authoritative.
     _grounded._legacy._build_preliminary_procurement_analysis = _preliminary_with_explicit_scope
     _INSTALLED = True
