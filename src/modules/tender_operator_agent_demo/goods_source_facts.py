@@ -7,10 +7,20 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-_STANDARD = re.compile(r"\b(?:ГОСТ(?:\s*Р)?|ТУ|ТР\s*ТС|ISO|IEC|DIN|СП|СНиП)\s*[№N]?\s*[A-ZА-ЯЁ0-9][A-ZА-ЯЁ0-9./-]*", re.IGNORECASE)
+_STANDARD = re.compile(
+    r"\b(?:ГОСТ(?:\s+Р)?|ТУ|ТР\s+ТС|ISO|IEC|DIN|СП|СНиП)\s*[№N]?\s*\d+(?:[./-]\d+)*\b",
+    re.IGNORECASE,
+)
 _QUANTITY = re.compile(r"\b(?:количество|кол-во|объем)\s*[:—-]?\s*(\d+(?:[.,]\d+)?)\s*(шт\.?|штук|ед\.?|м|мм|кг|л|компл(?:ект)?(?:а)?|упак(?:овка)?(?:и)?)\b", re.IGNORECASE)
 _CHARACTERISTIC = re.compile(r"\b(номинальное напряжение|напряжение|ёмкость|емкость|мощность|степень защиты|сечение|длина|ширина|высота|объем)\s*[:—-]?\s*(IP\s*\d{2,3}|\d+(?:[.,]\d+)?\s*(?:В|кВт|Ач|А|мм²|мм2|мм|см|м|ТБ|ГБ|кг|л))\b", re.IGNORECASE)
-_DELIVERY = re.compile(r"\b(?:срок поставки|поставка)\s*[:—-]?\s*(?:в течение\s+)?\d+\s+(?:календарных?|рабочих?)\s+дн(?:я|ей)\b", re.IGNORECASE)
+_DELIVERY_TERM = re.compile(
+    r"\b(?:(?:в\s+)?срок\s+не\s+более|не\s+позднее|не\s+более|в\s+течение)?\s*"
+    r"(?:\d+|одного|двух|тр[её]х|четыр[её]х|пяти|шести|семи|восьми|девяти|десяти|"
+    r"одиннадцати|двенадцати|тринадцати|четырнадцати|пятнадцати|двадцати|тридцати)\s+"
+    r"(?:календарных?|рабочих?)\s+дн(?:я|ей)\b",
+    re.IGNORECASE,
+)
+_DELIVERY_CONTEXT = re.compile(r"\b(?:срок\s+поставки|поставк(?:а|и|у|е|ой|ою))\b", re.IGNORECASE)
 _PLACE = re.compile(r"\bместо поставки\s*[:—-]?\s*(.{8,220})", re.IGNORECASE)
 _WARRANTY = re.compile(r"\b(?:гарантийн\w*\s+(?:срок|обязательств\w*)|гарантия)\b.{0,120}?\b(?:не менее\s+)?\d+\s+(?:месяц(?:ев|а)?|лет|года?)\b", re.IGNORECASE)
 _PRODUCT = re.compile(r"\b(?:наименование (?:поставляемого )?товара|товар)\s*[:—-]\s*([^\n]{3,240})", re.IGNORECASE)
@@ -56,7 +66,12 @@ def semantic_procurement_role(document: Any) -> str:
 
 def detect_procurement_richness(document: Any) -> bool:
     text = str(getattr(document, "text", "") or "")
-    return bool(_STANDARD.search(text) or _QUANTITY.search(text) or _CHARACTERISTIC.search(text) or _DELIVERY.search(text) or _WARRANTY.search(text))
+    return bool(_STANDARD.search(text) or _QUANTITY.search(text) or _CHARACTERISTIC.search(text) or _has_delivery_deadline(text) or _WARRANTY.search(text))
+
+
+def _has_delivery_deadline(text: str) -> bool:
+    """Recognize a day-based term only when the same line concerns supply."""
+    return bool(_DELIVERY_CONTEXT.search(text) and _DELIVERY_TERM.search(text))
 
 
 def _fact(document: Any, role: str, row: int, kind: str, value: str, excerpt: str, *, unit: str | None = None, strategy: str = "generic_text_v1") -> ProcurementSourceFact:
@@ -118,7 +133,9 @@ def extract_goods_source_facts(documents: list[Any]) -> list[ProcurementSourceFa
                 candidates.append(_fact(document, role, row, "PRODUCT_CHARACTERISTIC", f"{match.group(1)} {match.group(2)}", line))
             for match in _STANDARD.finditer(line):
                 candidates.append(_fact(document, role, row, "STANDARD", match.group(0), line))
-            for pattern, kind in ((_DELIVERY, "DELIVERY_DEADLINE"), (_PLACE, "DELIVERY_PLACE"), (_WARRANTY, "WARRANTY")):
+            if _has_delivery_deadline(line):
+                candidates.append(_fact(document, role, row, "DELIVERY_DEADLINE", line, line))
+            for pattern, kind in ((_PLACE, "DELIVERY_PLACE"), (_WARRANTY, "WARRANTY")):
                 for match in pattern.finditer(line):
                     candidates.append(_fact(document, role, row, kind, match.group(0), line))
             lowered = line.lower()
@@ -136,7 +153,83 @@ def extract_goods_source_facts(documents: list[Any]) -> list[ProcurementSourceFa
     return facts
 
 
-def build_goods_requirements_from_source_facts(facts: list[ProcurementSourceFact]) -> list[dict[str, Any]]:
+def _fact_type_priority(fact: ProcurementSourceFact) -> int:
+    if fact.fact_type in {"DELIVERY_DEADLINE", "DELIVERY_PLACE", "WARRANTY"}:
+        return 0
+    if fact.fact_type in {"SAFETY", "CERTIFICATE", "EQUIVALENT_RULE", "PRODUCT_CHARACTERISTIC", "QUANTITY", "STANDARD"}:
+        return 1
+    return 2
+
+
+def _role_priority(fact: ProcurementSourceFact) -> int:
+    return {
+        "TECHNICAL_SPEC": 0,
+        "SPECIFICATION_TABLE": 1,
+        "CONTRACT_DRAFT": 2,
+        "NOTICE": 3,
+        "SUPPORTING": 4,
+        "OTHER": 5,
+        "NMCK": 6,
+    }.get(fact.semantic_role, 7)
+
+
+def prioritize_goods_source_facts(facts: list[ProcurementSourceFact], *, limit: int) -> list[ProcurementSourceFact]:
+    """Keep a bounded, stable mix of material facts before repeated product rows."""
+    if len(facts) <= limit:
+        return list(facts)
+
+    indexed = list(enumerate(facts))
+    material = [(index, fact) for index, fact in indexed if fact.fact_type != "PRODUCT_ITEM"]
+    products = [(index, fact) for index, fact in indexed if fact.fact_type == "PRODUCT_ITEM"]
+    material.sort(key=lambda pair: (_fact_type_priority(pair[1]), _role_priority(pair[1]), pair[0]))
+    products.sort(key=lambda pair: (_role_priority(pair[1]), pair[0]))
+
+    product_budget = min(6, len(products), limit)
+    material_budget = limit - product_budget
+    selected: list[tuple[int, ProcurementSourceFact]] = []
+    selected_ids: set[str] = set()
+
+    # First cover fact-type/document combinations so one dense file cannot monopolize material facts.
+    covered_material: set[tuple[str, str]] = set()
+    for index, fact in material:
+        key = (fact.fact_type, fact.file_id)
+        if key not in covered_material and len(selected) < material_budget:
+            selected.append((index, fact))
+            selected_ids.add(fact.fact_id)
+            covered_material.add(key)
+
+    # Reserve a small, role-diverse product sample; product identity remains visible without crowding out terms.
+    covered_product_documents: set[tuple[str, str]] = set()
+    for index, fact in products:
+        key = (fact.semantic_role, fact.file_id)
+        if key not in covered_product_documents and len(selected) < material_budget + product_budget:
+            selected.append((index, fact))
+            selected_ids.add(fact.fact_id)
+            covered_product_documents.add(key)
+    for index, fact in products:
+        if len(selected) >= material_budget + product_budget:
+            break
+        if fact.fact_id not in selected_ids:
+            selected.append((index, fact))
+            selected_ids.add(fact.fact_id)
+
+    # Fill remaining capacity with the same deterministic material ordering, then products.
+    for candidates in (material, products):
+        for index, fact in candidates:
+            if len(selected) >= limit:
+                break
+            if fact.fact_id not in selected_ids:
+                selected.append((index, fact))
+                selected_ids.add(fact.fact_id)
+
+    return [fact for _, fact in selected]
+
+
+def build_goods_requirements_from_source_facts(
+    facts: list[ProcurementSourceFact], *, limit: int | None = None
+) -> list[dict[str, Any]]:
+    if limit is not None:
+        facts = prioritize_goods_source_facts(facts, limit=limit)
     rows: list[dict[str, Any]] = []
     for fact in facts:
         titles = {

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from src.modules.tender_operator_agent_demo.goods_source_facts import (
     build_goods_requirements_from_source_facts,
     detect_procurement_richness,
@@ -55,6 +57,35 @@ def test_contract_delivery_place_and_warranty_are_source_facts():
     assert {fact.fact_type for fact in facts} >= {"DELIVERY_DEADLINE", "DELIVERY_PLACE", "WARRANTY"}
 
 
+@pytest.mark.parametrize("text", [
+    "Срок поставки: 10 рабочих дней.",
+    "Поставка в течение 10 рабочих дней.",
+    "Поставка осуществляется в срок не более 10 рабочих дней.",
+    "Поставка осуществляется в срок не более десяти рабочих дней, следующих за днем направления Заявки Заказчиком.",
+    "Поставка должна быть выполнена не позднее 10 рабочих дней.",
+    "Поставка выполняется не более десяти рабочих дней после направления заявки.",
+])
+def test_delivery_deadline_accepts_contractual_day_term_with_supply_context(text):
+    facts = extract_goods_source_facts([_doc(text)])
+    assert [fact.fact_type for fact in facts] == ["DELIVERY_DEADLINE"]
+
+
+def test_delivery_deadline_rejects_day_term_without_supply_context():
+    facts = extract_goods_source_facts([_doc("Ответ должен быть направлен в срок не более десяти рабочих дней.")])
+    assert "DELIVERY_DEADLINE" not in {fact.fact_type for fact in facts}
+
+
+def test_standard_matcher_requires_structured_identifier_after_standard_prefix():
+    positive = "ГОСТ 12345-2020; ГОСТ Р 50571.5.54-2013; СП 256.1325800.2016; ТУ 27.33.13-001-12345678-2025; IEC 60947-2; ISO 9001"
+    facts = extract_goods_source_facts([_doc(positive)])
+    assert {fact.value for fact in facts if fact.fact_type == "STANDARD"} == {
+        "ГОСТ 12345-2020", "ГОСТ Р 50571.5.54-2013", "СП 256.1325800.2016",
+        "ТУ 27.33.13-001-12345678-2025", "IEC 60947-2", "ISO 9001",
+    }
+    negative = "спор спецификация исполнитель стоимость гостевой ту же DIN СП без номера"
+    assert not {fact for fact in extract_goods_source_facts([_doc(negative)]) if fact.fact_type == "STANDARD"}
+
+
 def test_generic_templates_are_not_goods_requirements():
     assert _build_goods_requirement_rows([_doc("Короткий нейтральный текст.")]) == []
 
@@ -90,3 +121,19 @@ def test_d08_forensic_shape_has_facts_without_templates():
     assert sum(detect_procurement_richness(document) for document in documents) >= 2
     assert facts and requirements
     assert not {row["title"] for row in requirements} & {"Соответствие ГОСТ / ТУ", "Сертификаты и паспорт качества", "Маркировка и безопасность", "Доставка до заказчика"}
+
+
+def test_retention_prioritizes_later_technical_and_contract_facts_over_early_nmck_rows():
+    nmck_rows = "\n".join(f"{index}\tТовар НМЦК {index}\t1\tшт." for index in range(1, 32))
+    documents = [
+        _doc(f"Обоснование НМЦК\n{nmck_rows}", name="nmck.xlsx", file_id="N"),
+        _doc("Описание объекта закупки\nНоминальное напряжение: 220 В\nКоличество: 10 шт.", name="technical.docx", file_id="T"),
+        _doc("Проект контракта\nСрок поставки: 10 рабочих дней.\nГарантийный срок: 24 месяца.", name="contract.docx", file_id="C"),
+    ]
+    first = _build_goods_requirement_rows(documents)
+    second = _build_goods_requirement_rows(documents)
+    assert first == second
+    assert len(first) <= 24
+    assert {row["type"] for row in first} >= {"product_item", "product_characteristic", "delivery_deadline", "warranty"}
+    assert {row["evidence_candidate"]["file_id"] for row in first} >= {"N", "T", "C"}
+    assert all(row["source_fact_id"] and row["locator"] and row["excerpt"] for row in first)
