@@ -1212,13 +1212,96 @@ def _infer_procurement_kind(*texts: str | None) -> str:
     return "generic"
 
 
+_SCOPE_SIGNALS: tuple[tuple[str, str, int, str], ...] = (
+    ("rental", r"\bарендодатель\w*(?:\s+обяз\w*)?\s+предостав\w*.*\bвременн\w*(?:\s+\w+){0,3}\s+пользован", 6, "rental_temporary_use"),
+    ("rental", r"\bарендн\w*\s+плат", 5, "rental_payment"),
+    ("rental", r"\bсрок\s+аренд", 4, "rental_term"),
+    ("rental", r"\bаренд\w*", 2, "rental_marker"),
+    ("services", r"\bисполнитель\w*\s+обяз\w*\s+оказ", 5, "performer_services"),
+    ("services", r"\bоказани[ея]\s+услуг", 5, "services_subject"),
+    ("services", r"\bпредмет\w*.{0,80}\bоказан\w*\s+услуг", 5, "services_contract_subject"),
+    ("services", r"\bуслуг\w*", 1, "services_supporting_marker"),
+    ("goods", r"\bпоставщик\w*\s+обяз\w*\s+постав", 5, "supplier_delivery"),
+    ("goods", r"\bпоставка\s+товар", 4, "goods_delivery_subject"),
+    ("goods", r"\b(?:количество|место|срок)\s+поставки\s+товар", 4, "goods_delivery_term"),
+    ("goods", r"\bпоставк\w*\s+товар", 3, "goods_supply_marker"),
+    ("goods", r"\bпоставк\w*\s+[^\n]{3,100}", 3, "goods_supply_subject"),
+    ("works", r"\bподрядчик\w*\s+обяз\w*\s+выполн", 5, "contractor_works"),
+    ("works", r"\bвыполнени[ея]\s+работ", 5, "works_subject"),
+    ("works", r"\bрезультат\w*\s+работ", 4, "works_result"),
+    ("works", r"\bакт\s+выполненн\w*\s+работ", 4, "works_acceptance"),
+)
+
+
+def _scope_signal_evidence(metadata: dict[str, Any], documents: list[AnalyzedDocument], notice_text: str) -> list[dict[str, Any]]:
+    sources: list[tuple[str, str, str, str, str]] = []
+    title = str(metadata.get("tender_title") or "")
+    if title:
+        sources.append(("metadata:tender_title", "METADATA", "metadata:tender_title", title, "METADATA"))
+    if notice_text and notice_text != title:
+        sources.append(("notice", "NOTICE", "notice", notice_text, "NOTICE"))
+    declared_roles = {
+        "notice": "NOTICE",
+        "technical_spec": "TECHNICAL_SPEC",
+        "contract_draft": "CONTRACT_DRAFT",
+        "specification_table": "SPECIFICATION_TABLE",
+        "supporting": "SUPPORTING",
+    }
+    for document in documents:
+        # The ingestion role is more reliable than lexical role detection for a
+        # contract that happens to contain an NMCK or boilerplate reference.
+        semantic_role = declared_roles.get(str(getattr(document, "role", "")).lower()) or semantic_procurement_role(document)
+        for row, raw_line in enumerate((document.text or "").splitlines(), start=1):
+            line = " ".join(raw_line.split())
+            if line:
+                sources.append((document.display_name, document.file_id, f"line:{row}", line, semantic_role))
+
+    evidence: list[dict[str, Any]] = []
+    for source_document, file_id, locator, text, semantic_role in sources:
+        for category, pattern, weight, basis in _SCOPE_SIGNALS:
+            if re.search(pattern, text, re.IGNORECASE):
+                evidence.append({
+                    "category": category,
+                    "weight": weight,
+                    "basis": basis,
+                    "source_document": source_document,
+                    "file_id": file_id,
+                    "locator": locator,
+                    "excerpt": text[:500],
+                    "semantic_role": semantic_role,
+                })
+    return evidence
+
+
 def _classify_procurement_scope(metadata: dict[str, Any], documents: list[AnalyzedDocument], notice_text: str) -> dict[str, Any]:
-    """Classify obligations without using the result to suppress goods extraction."""
+    """Classify the procurement subject from weighted, source-backed signals."""
     title = str(metadata.get("tender_title") or "").lower()
     text = "\n".join([title, notice_text, *[(doc.text or "") for doc in documents]]).lower()
-    items = _collect_supply_items(documents)
-    structured_goods = [item for item in items if item.name_source_type == "structured_direct_name"]
-    has_goods = bool(items) or "поставка" in title or "поставляем" in text
+    evidence = _scope_signal_evidence(metadata, documents, notice_text)
+    # Repeated boilerplate must not win solely through line count.  A category
+    # receives at most one strongest contribution per document;
+    # technical specifications and contract drafts are the most probative roles.
+    role_multiplier = {"CONTRACT_DRAFT": 2, "TECHNICAL_SPEC": 2, "SPECIFICATION_TABLE": 2, "NOTICE": 2}
+    best_document_signal: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in evidence:
+        key = (item["category"], item["file_id"])
+        if item["weight"] > best_document_signal.get(key, {"weight": -1})["weight"]:
+            best_document_signal[key] = item
+    scores = {category: 0 for category in ("goods", "services", "works", "rental")}
+    for item in best_document_signal.values():
+        scores[item["category"]] += item["weight"] * role_multiplier.get(item["semantic_role"], 1)
+    ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+    primary, top_score = ranked[0]
+    second_score = ranked[1][1]
+    strong_categories = [category for category, score in ranked if score >= 4]
+    if top_score < 3:
+        primary = "unresolved"
+        decision_basis = "No category has sufficient independent strong evidence."
+    elif len(strong_categories) >= 2 and second_score >= top_score - 1:
+        primary = "mixed"
+        decision_basis = "Independent strong evidence supports competing procurement subjects."
+    else:
+        decision_basis = "Highest weighted procurement-subject evidence is unambiguous."
     structured_codes = (metadata.get("procurement") or {}).get("okpd2_codes", [])
     service_okpd = any(
         str(code.get("code", "")).startswith("62.02")
@@ -1226,7 +1309,7 @@ def _classify_procurement_scope(metadata: dict[str, Any], documents: list[Analyz
     )
     okpd_works = any(str(code.get("code", "")).startswith(("41.", "42.", "43.")) for code in structured_codes if isinstance(code, dict))
     strong_works = okpd_works or any(marker in text for marker in ("смета", "кс-2", "кс-3", "ведомость объемов работ"))
-    has_services = any(marker in text for marker in ("оказание услуг", "услуг"))
+    has_services = scores["services"] > 0
     title_kind = _infer_procurement_kind(title)
     inferred_kind = _infer_procurement_kind(text)
     # A titled supply or a detailed structured product list is authoritative;
@@ -1238,33 +1321,27 @@ def _classify_procurement_scope(metadata: dict[str, Any], documents: list[Analyz
     )
     if service_okpd or support_certificate:
         primary = "services"
+        decision_basis = "Structured service evidence overrides unstructured text signals."
     elif title_kind in software_kinds:
         primary = title_kind
-    elif inferred_kind in software_kinds and not has_goods:
+    elif inferred_kind in software_kinds and scores["goods"] == 0:
         primary = inferred_kind
-    elif "оказание услуг" in title:
-        primary = "services"
-    elif strong_works and not ("поставка" in title or "товар" in title or len(structured_goods) > 1):
+    elif strong_works and primary == "unresolved":
         primary = "works"
-    elif has_goods and strong_works:
-        primary = "mixed"
-    elif has_goods:
-        primary = "goods"
-    elif has_services:
-        primary = "services"
-    else:
-        primary = "unknown"
-    software_mixed = primary == "mixed" and (title_kind == "mixed" or not has_goods)
-    applicable = primary == "goods" or (primary == "mixed" and not software_mixed) or bool(items)
+    applicable = primary == "goods"
     return {
         "procurement_primary_scope": primary,
-        "contains_goods": has_goods,
+        "contains_goods": scores["goods"] > 0,
         "contains_works": strong_works,
         "contains_services": has_services,
+        "contains_rental": scores["rental"] > 0,
+        "scope_scores": scores,
+        "classification_evidence": evidence,
+        "scope_decision_basis": decision_basis,
         "software_service_support": service_okpd or support_certificate,
         "activation_support_item": "код активации" in text and "техническ" in text and "поддержк" in text,
         "goods_extraction_applicable": applicable,
-        "scope_classification_conflict": has_goods and not applicable,
+        "scope_classification_conflict": primary in {"mixed", "unresolved"},
     }
 
 
@@ -2730,6 +2807,11 @@ def _build_document_grounded_requirements(
     documents: list[AnalyzedDocument],
     procurement_kind: str,
 ) -> list[dict[str, str]]:
+    # Source facts remain available for audit in every scope, but the legacy
+    # mappings below are GOODS-oriented and must not become procurement truth
+    # for non-GOODS subjects.
+    if procurement_kind in {"services", "rental", "works", "unresolved"}:
+        return []
     if procurement_kind == "goods":
         rows = _build_goods_requirement_rows(documents)
         if rows:
@@ -3045,9 +3127,9 @@ def _build_preliminary_procurement_analysis(
     scope = _classify_procurement_scope(metadata, documents, notice)
     procurement_kind = scope["procurement_primary_scope"]
     extracted_service_items = [item for item in _collect_supply_items(documents) if item.item_type == "service"]
-    if extracted_service_items and procurement_kind not in {"works", "mixed"}:
+    if extracted_service_items and procurement_kind in {"unresolved", "generic"}:
         procurement_kind = "services"
-    elif _collect_supply_items(documents) and procurement_kind not in {"works", "services", "mixed"}:
+    elif _collect_supply_items(documents) and procurement_kind in {"unresolved", "generic"}:
         procurement_kind = "goods"
     if scope["goods_extraction_applicable"] and procurement_kind in {"goods", "mixed"}:
         preliminary = _build_goods_preliminary_analysis(
@@ -3071,7 +3153,26 @@ def _build_preliminary_procurement_analysis(
             notice_text=notice,
             contract_draft_text=contract_text,
         )
-    if procurement_kind in {"mixed", "software_modification", "integration", "license", "works"}:
+    # No GOODS or software-work template is safe for these scopes.
+    if procurement_kind in {"rental", "unresolved", "works"}:
+        tender_title = metadata.get("tender_title") or "не указан"
+        # The legacy fallback only has GOODS/SERVICES/WORKS templates.  Keep
+        # the semantic scope in provenance, while passing a neutral kind to
+        # that fallback so it cannot manufacture a generic WORKS checklist.
+        fallback_kind = "generic" if procurement_kind == "works" else procurement_kind
+        return {
+            "overview": [f"Предмет закупки: {tender_title}", f"Тип закупки: {procurement_kind}."],
+            "compliance_highlights": [],
+            "delivery_model": [],
+            "contract_highlights": [],
+            "next_actions": ["Подтвердить предмет закупки и применимый category-specific workflow по первичным документам."],
+            "extracted_fields": [],
+            "procurement_kind": fallback_kind,
+            "scope": scope,
+            "supply_section_note": "Товарный анализ не запускается до подтверждения категории закупки.",
+            "spec_table": {"columns": [], "rows": []},
+        }
+    if procurement_kind in {"mixed", "software_modification", "integration", "license"}:
         work_rows = _build_software_work_rows(documents)
         initial_price = _extract_notice_price(metadata, notice, contract_text)
         deadline = metadata.get("deadline") or _extract_notice_service_deadline(notice) or _extract_notice_delivery_deadline(notice)
@@ -3428,17 +3529,19 @@ def _build_output_payloads(
     notice_text = _collect_role_text(documents, "notice") or _collect_role_text(documents, "supporting") or metadata["tender_title"]
     scope = _classify_procurement_scope(metadata, documents, notice_text)
     procurement_kind = scope["procurement_primary_scope"]
-    if any(item.item_type == "service" for item in _collect_supply_items(documents)) and procurement_kind not in {"works", "mixed"}:
+    if any(item.item_type == "service" for item in _collect_supply_items(documents)) and procurement_kind in {"unresolved", "generic"}:
         procurement_kind = "services"
-    elif _collect_supply_items(documents) and procurement_kind not in {"works", "services", "mixed"}:
+    elif _collect_supply_items(documents) and procurement_kind in {"unresolved", "generic"}:
         procurement_kind = "goods"
     grounded_requirement_rows = _build_document_grounded_requirements(documents, procurement_kind)
     requirement_rows = (
-        grounded_requirement_rows
+        []
+        if procurement_kind in {"services", "rental", "works", "unresolved"}
+        else grounded_requirement_rows
         if procurement_kind == "goods"
         else grounded_requirement_rows or _extract_requirement_rows(requirements, core_complete, procurement_kind)
     )
-    source_facts = extract_goods_source_facts(documents) if procurement_kind == "goods" else []
+    source_facts = extract_goods_source_facts(documents)
     rich_documents = [doc for doc in documents if doc.text and detect_procurement_richness(doc)]
     quote_files_present = quote_inputs_present
     output_warnings = list(metadata.get("warnings", []))
