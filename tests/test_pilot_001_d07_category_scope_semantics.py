@@ -115,3 +115,29 @@ def test_d07_rental_suppresses_goods_requirements_but_keeps_source_facts_for_aud
     assert extract_goods_source_facts([document])
     assert preliminary["procurement_kind"] == "rental"
     assert preliminary["supply_section_note"].startswith("Товарный анализ не запускается")
+
+
+def test_d07_resolved_rental_survives_service_framed_title_in_compatibility_chain():
+    document = _document(
+        """Арендодатель обязуется предоставить оборудование за плату во временное владение и пользование.
+Арендная плата вносится ежемесячно.
+"""
+    )
+    title = "Оказание услуг по предоставлению оборудования в аренду"
+
+    scope = _classify_procurement_scope(
+        {"tender_title": title, "procurement": {}},
+        [document],
+        title,
+    )
+    preliminary = _build_preliminary_procurement_analysis(
+        metadata={"tender_title": title, "procurement": {"delivery_term": None}},
+        documents=[document],
+        technical_spec_text="",
+        contract_draft_text=document.text,
+        notice_text=title,
+    )
+
+    assert scope["procurement_primary_scope"] == "rental"
+    assert preliminary["procurement_kind"] == "rental"
+    assert preliminary["scope"]["procurement_primary_scope"] == "rental"
