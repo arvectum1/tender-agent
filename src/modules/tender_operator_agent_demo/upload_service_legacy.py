@@ -2605,7 +2605,7 @@ def _collect_goods_supply_items_from_documents(documents: list[AnalyzedDocument]
 
 
 def _build_goods_requirement_rows(documents: list[AnalyzedDocument]) -> list[dict[str, str]]:
-    return build_goods_requirements_from_source_facts(extract_goods_source_facts(documents))[:24]
+    return build_goods_requirements_from_source_facts(extract_goods_source_facts(documents), limit=24)
 
 
 def _build_goods_questions(documents: list[AnalyzedDocument]) -> list[str]:
