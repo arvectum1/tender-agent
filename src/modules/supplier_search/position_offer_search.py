@@ -27,11 +27,9 @@ def _candidate_id(position_id: str, source_url: str) -> str:
     return f"public-{digest}"
 
 
-def _candidate_item_name(position: ProcurementPosition, supplier_snippet: str) -> str:
+def _candidate_item_name(supplier_name: str, supplier_snippet: str) -> str:
     snippet = supplier_snippet.strip()
-    if not snippet:
-        return position.item_name
-    return snippet
+    return snippet or supplier_name
 
 
 def _supplier_result_to_candidate(
@@ -44,7 +42,7 @@ def _supplier_result_to_candidate(
     return SupplierOfferCandidate(
         offer_id=_candidate_id(position.position_id, source_url),
         supplier_label=supplier_name,
-        item_name=_candidate_item_name(position, snippet),
+        item_name=_candidate_item_name(supplier_name, snippet),
         source_type="public_web",
         source_ref=source_url,
         source_url=source_url,
@@ -67,7 +65,7 @@ def search_public_offers_for_position(
 ) -> PositionOfferSearchOutcome:
     """Run M-016 public supplier search and adapt results into Supplier Engine candidates.
 
-    Search snippets are treated only as source-backed public-web candidate text. Missing
+    Search-result text is treated only as source-backed public-web candidate text. Missing
     commercial terms remain unknown and are never inferred from the query or position.
     """
     search_outcome = search_suppliers(
