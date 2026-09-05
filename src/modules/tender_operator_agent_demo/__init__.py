@@ -24,6 +24,9 @@ from src.modules.tender_operator_agent_demo.grounded_fallback_runtime_contract i
 from src.modules.tender_operator_agent_demo.d07_scope_output_binding import (
     install as _install_d07_scope_output_binding,
 )
+from src.modules.tender_operator_agent_demo.d09_scope_consistent_operator_output import (
+    install as _install_d09_scope_consistent_operator_output,
+)
 
 _install_decision_useful_runtime_patch()
 _install_decision_useful_output_patch()
@@ -31,5 +34,6 @@ _install_grounded_fallback_patch()
 _install_grounded_fallback_followup()
 _install_grounded_fallback_evidence_binding()
 _install_grounded_fallback_runtime_contract()
-# Must be installed last: D07 semantic scope is authoritative at serialization.
 _install_d07_scope_output_binding()
+# Must be installed last: D09 reconciles all operator-facing category semantics.
+_install_d09_scope_consistent_operator_output()
