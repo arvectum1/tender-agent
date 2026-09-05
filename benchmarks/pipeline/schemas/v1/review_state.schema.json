@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arvectum.com/schemas/benchmark-pipeline/v1/review_state.schema.json",
+  "title": "Benchmark Review State v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "case_id", "state", "reasons", "routed_at", "requires_product_owner"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "case_id": {"type": "string", "minLength": 1},
+    "state": {"enum": ["AI_CURATED_SILVER", "HUMAN_VERIFIED_GOLD", "NEEDS_REVIEW"]},
+    "reasons": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+    "routed_at": {"type": "string", "format": "date-time"},
+    "requires_product_owner": {"type": "boolean"},
+    "previous_state": {"enum": ["AI_CURATED_SILVER", "NEEDS_REVIEW"]},
+    "promoted_by": {"type": "string", "minLength": 1},
+    "promoted_at": {"type": "string", "format": "date-time"},
+    "approval_note": {"type": "string", "minLength": 1, "maxLength": 2000}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"state": {"const": "HUMAN_VERIFIED_GOLD"}}, "required": ["state"]},
+      "then": {
+        "required": ["previous_state", "promoted_by", "promoted_at", "approval_note"],
+        "properties": {"requires_product_owner": {"const": false}}
+      },
+      "else": {"properties": {"requires_product_owner": {"const": true}}}
+    }
+  ]
+}

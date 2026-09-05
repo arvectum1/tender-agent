@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arvectum.com/schemas/benchmark-pipeline/v1/frozen_label.schema.json",
+  "title": "Frozen Blind Label Receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "case_id", "frozen_at", "source_bundle_sha256", "evaluator_bundle_sha256", "discovery_label_sha256", "document_truth_sha256", "label_set_sha256"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "case_id": {"type": "string", "minLength": 1},
+    "frozen_at": {"type": "string", "format": "date-time"},
+    "source_bundle_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "discovery_label_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "document_truth_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "label_set_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "evaluator_bundle_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

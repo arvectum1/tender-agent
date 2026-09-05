@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arvectum.com/schemas/benchmark-pipeline/v1/normalized_sut_output.schema.json",
+  "title": "Normalized Tender Agent Output v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "case_id", "source_bundle_sha256", "discovery_decision", "facts"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "case_id": {"type": "string", "minLength": 1},
+    "source_bundle_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "discovery_decision": {"enum": ["RELEVANT", "NOT_RELEVANT", "UNKNOWN", "INSUFFICIENT_EVIDENCE"]},
+    "facts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["fact_id", "field_path", "status", "materiality"],
+        "properties": {
+          "fact_id": {"type": "string", "minLength": 1},
+          "field_path": {"type": "string", "minLength": 1},
+          "status": {"enum": ["ASSERTED", "UNKNOWN", "INSUFFICIENT_EVIDENCE"]},
+          "materiality": {"enum": ["MATERIAL", "NON_MATERIAL"]},
+          "value": {}
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"status": {"const": "ASSERTED"}}, "required": ["status"]},
+            "then": {"required": ["value"]}
+          }
+        ]
+      }
+    }
+  }
+}

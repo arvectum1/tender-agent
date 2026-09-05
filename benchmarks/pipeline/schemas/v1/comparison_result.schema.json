@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arvectum.com/schemas/benchmark-pipeline/v1/comparison_result.schema.json",
+  "title": "Benchmark Comparison Result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "case_id", "compared_at", "comparator_version", "label_set_sha256", "sut_artifact_sha256", "discovery", "document", "schema_failures", "review_signals"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "case_id": {"type": "string", "minLength": 1},
+    "compared_at": {"type": "string", "format": "date-time"},
+    "comparator_version": {"type": "string", "minLength": 1},
+    "label_set_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "sut_artifact_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "discovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expected", "actual", "outcome"],
+      "properties": {
+        "expected": {"enum": ["RELEVANT", "NOT_RELEVANT", "UNKNOWN", "INSUFFICIENT_EVIDENCE"]},
+        "actual": {"enum": ["RELEVANT", "NOT_RELEVANT", "UNKNOWN", "INSUFFICIENT_EVIDENCE"]},
+        "outcome": {"enum": ["MATCH", "MISMATCH", "NOT_SCORABLE"]}
+      }
+    },
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["true_positive", "false_positive", "false_negative", "abstention_match", "unscored_extra", "precision", "recall", "f1", "items"],
+      "properties": {
+        "true_positive": {"type": "integer", "minimum": 0},
+        "false_positive": {"type": "integer", "minimum": 0},
+        "false_negative": {"type": "integer", "minimum": 0},
+        "abstention_match": {"type": "integer", "minimum": 0},
+        "unscored_extra": {"type": "integer", "minimum": 0},
+        "precision": {"oneOf": [{"type": "number", "minimum": 0, "maximum": 1}, {"type": "null"}]},
+        "recall": {"oneOf": [{"type": "number", "minimum": 0, "maximum": 1}, {"type": "null"}]},
+        "f1": {"oneOf": [{"type": "number", "minimum": 0, "maximum": 1}, {"type": "null"}]},
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["fact_id", "materiality", "expected_status", "actual_status", "outcome"],
+            "properties": {
+              "fact_id": {"type": "string", "minLength": 1},
+              "materiality": {"enum": ["MATERIAL", "NON_MATERIAL"]},
+              "expected_status": {"enum": ["ASSERTED", "UNKNOWN", "INSUFFICIENT_EVIDENCE", "CONFLICTING_EVIDENCE", "UNLABELED"]},
+              "actual_status": {"enum": ["ASSERTED", "UNKNOWN", "INSUFFICIENT_EVIDENCE", "MISSING"]},
+              "outcome": {"enum": ["TRUE_POSITIVE", "FALSE_NEGATIVE", "CONTRADICTION", "UNSUPPORTED_ASSERTION", "ABSTENTION_MATCH", "UNLABELED_EXTRA", "UNCLASSIFIED"]}
+            }
+          }
+        }
+      }
+    },
+    "schema_failures": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "review_signals": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true}
+  }
+}

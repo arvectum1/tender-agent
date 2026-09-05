@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arvectum.com/schemas/benchmark-pipeline/v1/blind_document_truth.schema.json",
+  "title": "Blind Document Truth v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "case_id", "source_bundle_sha256", "evaluator", "evaluated_at", "facts", "material_uncertainties"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "case_id": {"type": "string", "minLength": 1},
+    "source_bundle_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "evaluator": {"type": "string", "minLength": 1},
+    "evaluated_at": {"type": "string", "format": "date-time"},
+    "facts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["fact_id", "field_path", "status", "materiality", "confidence", "evidence_refs"],
+        "properties": {
+          "fact_id": {"type": "string", "minLength": 1},
+          "field_path": {"type": "string", "minLength": 1},
+          "status": {"enum": ["ASSERTED", "UNKNOWN", "INSUFFICIENT_EVIDENCE", "CONFLICTING_EVIDENCE"]},
+          "materiality": {"enum": ["MATERIAL", "NON_MATERIAL"]},
+          "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+          "value": {},
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["source_id", "locator"],
+              "properties": {
+                "source_id": {"type": "string", "minLength": 1},
+                "locator": {"type": "string", "minLength": 1},
+                "quote": {"type": "string", "maxLength": 500}
+              }
+            }
+          },
+          "notes": {"type": "string", "maxLength": 2000}
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"status": {"const": "ASSERTED"}}, "required": ["status"]},
+            "then": {"required": ["value"], "properties": {"evidence_refs": {"minItems": 1}}}
+          }
+        ]
+      }
+    },
+    "material_uncertainties": {"type": "array", "items": {"type": "string", "minLength": 1}}
+  }
+}

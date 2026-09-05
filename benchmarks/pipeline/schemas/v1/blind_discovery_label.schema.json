@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arvectum.com/schemas/benchmark-pipeline/v1/blind_discovery_label.schema.json",
+  "title": "Blind Discovery Label v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "case_id", "source_bundle_sha256", "evaluator", "evaluated_at", "decision", "confidence", "evidence_refs", "material_uncertainties"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "case_id": {"type": "string", "minLength": 1},
+    "source_bundle_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "evaluator": {"type": "string", "minLength": 1},
+    "evaluated_at": {"type": "string", "format": "date-time"},
+    "decision": {"enum": ["RELEVANT", "NOT_RELEVANT", "UNKNOWN", "INSUFFICIENT_EVIDENCE"]},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "rationale_summary": {"type": "string", "maxLength": 2000},
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source_id", "locator"],
+        "properties": {
+          "source_id": {"type": "string", "minLength": 1},
+          "locator": {"type": "string", "minLength": 1},
+          "quote": {"type": "string", "maxLength": 500}
+        }
+      }
+    },
+    "material_uncertainties": {"type": "array", "items": {"type": "string", "minLength": 1}}
+  }
+}

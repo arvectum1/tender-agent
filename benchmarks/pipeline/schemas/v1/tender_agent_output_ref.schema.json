@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arvectum.com/schemas/benchmark-pipeline/v1/tender_agent_output_ref.schema.json",
+  "title": "Tender Agent Output Reference v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "case_id", "produced_at", "source_bundle_sha256", "label_set_sha256_at_generation", "git_revision", "artifact_path", "artifact_sha256", "normalized_output_path", "normalized_output_sha256"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "case_id": {"type": "string", "minLength": 1},
+    "produced_at": {"type": "string", "format": "date-time"},
+    "source_bundle_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "label_set_sha256_at_generation": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "git_revision": {"type": "string", "minLength": 7},
+    "runtime_id": {"type": "string", "minLength": 1},
+    "artifact_path": {"type": "string", "minLength": 1},
+    "artifact_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "normalized_output_path": {"type": "string", "minLength": 1},
+    "normalized_output_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

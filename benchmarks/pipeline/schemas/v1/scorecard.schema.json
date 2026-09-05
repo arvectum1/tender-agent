@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arvectum.com/schemas/benchmark-pipeline/v1/scorecard.schema.json",
+  "title": "Benchmark Aggregate Scorecard v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "generated_at", "comparator_version", "case_count", "review_states", "discovery", "document", "needs_review_rate"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "comparator_version": {"type": "string", "minLength": 1},
+    "case_count": {"type": "integer", "minimum": 0},
+    "review_states": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["AI_CURATED_SILVER", "HUMAN_VERIFIED_GOLD", "NEEDS_REVIEW"],
+      "properties": {
+        "AI_CURATED_SILVER": {"type": "integer", "minimum": 0},
+        "HUMAN_VERIFIED_GOLD": {"type": "integer", "minimum": 0},
+        "NEEDS_REVIEW": {"type": "integer", "minimum": 0}
+      }
+    },
+    "discovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scored", "matches", "accuracy"],
+      "properties": {
+        "scored": {"type": "integer", "minimum": 0},
+        "matches": {"type": "integer", "minimum": 0},
+        "accuracy": {"oneOf": [{"type": "number", "minimum": 0, "maximum": 1}, {"type": "null"}]}
+      }
+    },
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["true_positive", "false_positive", "false_negative", "precision", "recall", "f1"],
+      "properties": {
+        "true_positive": {"type": "integer", "minimum": 0},
+        "false_positive": {"type": "integer", "minimum": 0},
+        "false_negative": {"type": "integer", "minimum": 0},
+        "precision": {"oneOf": [{"type": "number", "minimum": 0, "maximum": 1}, {"type": "null"}]},
+        "recall": {"oneOf": [{"type": "number", "minimum": 0, "maximum": 1}, {"type": "null"}]},
+        "f1": {"oneOf": [{"type": "number", "minimum": 0, "maximum": 1}, {"type": "null"}]}
+      }
+    },
+    "needs_review_rate": {"oneOf": [{"type": "number", "minimum": 0, "maximum": 1}, {"type": "null"}]}
+  }
+}
