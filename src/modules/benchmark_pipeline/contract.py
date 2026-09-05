@@ -1,160 +1,143 @@
 from __future__ import annotations
 
+import hashlib
 import json
-from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from jsonschema import Draft202012Validator, FormatChecker
 
-CONTRACT_VERSION = "1.0.0"
+
+CONTRACT_VERSION = "1.1.0"
+SCHEMA_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "benchmarks"
+    / "pipeline"
+    / "schema"
+    / CONTRACT_VERSION
+    / "benchmark-artifacts.schema.json"
+)
 
 
 class BenchmarkContractError(ValueError):
     pass
 
 
-class ReviewState(StrEnum):
-    AI_CURATED_SILVER = "AI_CURATED_SILVER"
-    NEEDS_REVIEW = "NEEDS_REVIEW"
-    HUMAN_VERIFIED_GOLD = "HUMAN_VERIFIED_GOLD"
+def canonical_json(value: Any) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
 
 
-DISCOVERY_LABELS = {"RELEVANT", "PARTIALLY_RELEVANT", "IRRELEVANT", "UNCLEAR"}
-ABSTENTION_STATES = {"ASSERTED", "UNKNOWN", "INSUFFICIENT_EVIDENCE"}
-
-_REQUIRED: dict[str, set[str]] = {
-    "case_manifest": {
-        "schema_version",
-        "case_id",
-        "procurement",
-        "source_urls",
-        "acquired_at",
-        "documents",
-        "source_scope",
-    },
-    "blind_discovery_label": {
-        "schema_version",
-        "case_id",
-        "label",
-        "reason",
-        "confidence",
-        "evidence",
-        "frozen_at",
-        "freeze_hash",
-    },
-    "blind_document_truth": {
-        "schema_version",
-        "case_id",
-        "facts",
-        "confidence",
-        "frozen_at",
-        "freeze_hash",
-    },
-    "tender_agent_output_ref": {
-        "schema_version",
-        "case_id",
-        "runtime_version",
-        "artifact_refs",
-        "produced_at",
-    },
-    "comparison_result": {
-        "schema_version",
-        "case_id",
-        "discovery",
-        "document",
-        "material_disagreement",
-        "review_reasons",
-    },
-    "review_state": {
-        "schema_version",
-        "case_id",
-        "state",
-        "reasons",
-        "updated_at",
-        "reviewer",
-    },
-    "aggregate_scorecard": {
-        "schema_version",
-        "case_count",
-        "discovery",
-        "document",
-        "review_states",
-    },
-}
+def canonical_sha256(value: Any) -> str:
+    return hashlib.sha256(canonical_json(value)).hexdigest()
 
 
-def _require_mapping(value: Any, name: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise BenchmarkContractError(f"{name} must be an object")
-    return value
+def file_sha256(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _load_schema() -> dict[str, Any]:
+    try:
+        return json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise BenchmarkContractError(f"benchmark schema not found: {SCHEMA_PATH}") from exc
 
 
 def validate_artifact(kind: str, artifact: dict[str, Any]) -> dict[str, Any]:
-    artifact = _require_mapping(artifact, kind)
-    required = _REQUIRED.get(kind)
-    if required is None:
+    if not isinstance(artifact, dict):
+        raise BenchmarkContractError(f"{kind} must be an object")
+
+    schema = _load_schema()
+    defs = schema.get("$defs", {})
+    if kind not in defs:
         raise BenchmarkContractError(f"unknown benchmark artifact kind: {kind}")
-    missing = sorted(required - set(artifact))
-    if missing:
-        raise BenchmarkContractError(f"{kind} missing required fields: {', '.join(missing)}")
-    if artifact["schema_version"] != CONTRACT_VERSION:
-        raise BenchmarkContractError(
-            f"{kind}.schema_version must be {CONTRACT_VERSION}, got {artifact['schema_version']!r}"
-        )
 
-    if kind == "case_manifest":
-        if not artifact["case_id"]:
-            raise BenchmarkContractError("case_manifest.case_id must be non-empty")
-        if not isinstance(artifact["source_urls"], list) or not artifact["source_urls"]:
-            raise BenchmarkContractError("case_manifest.source_urls must be a non-empty array")
-        if not isinstance(artifact["documents"], list):
-            raise BenchmarkContractError("case_manifest.documents must be an array")
-        for document in artifact["documents"]:
-            _require_mapping(document, "case_manifest.documents[]")
-            if not {"path", "sha256", "source_url"} <= set(document):
-                raise BenchmarkContractError(
-                    "each case_manifest document requires path, sha256 and source_url"
-                )
-
-    elif kind == "blind_discovery_label":
-        if artifact["label"] not in DISCOVERY_LABELS:
-            raise BenchmarkContractError("invalid discovery label")
-        _validate_confidence(artifact["confidence"], "blind_discovery_label.confidence")
-        if not isinstance(artifact["evidence"], list):
-            raise BenchmarkContractError("blind_discovery_label.evidence must be an array")
-
-    elif kind == "blind_document_truth":
-        _validate_confidence(artifact["confidence"], "blind_document_truth.confidence")
-        if not isinstance(artifact["facts"], list):
-            raise BenchmarkContractError("blind_document_truth.facts must be an array")
-        for fact in artifact["facts"]:
-            _require_mapping(fact, "blind_document_truth.facts[]")
-            if not {"field", "value", "evidence", "confidence", "abstention"} <= set(fact):
-                raise BenchmarkContractError(
-                    "each document truth fact requires field, value, evidence, confidence and abstention"
-                )
-            _validate_confidence(fact["confidence"], "fact.confidence")
-            if fact["abstention"] not in ABSTENTION_STATES:
-                raise BenchmarkContractError("invalid fact abstention state")
-            if fact["abstention"] != "ASSERTED" and fact["value"] is not None:
-                raise BenchmarkContractError("abstained facts must have null value")
-
-    elif kind == "review_state":
-        if artifact["state"] not in set(ReviewState):
-            raise BenchmarkContractError("invalid review state")
-        reviewer = _require_mapping(artifact["reviewer"], "review_state.reviewer")
-        if not {"type", "id"} <= set(reviewer):
-            raise BenchmarkContractError("reviewer requires type and id")
-
+    validator = Draft202012Validator(
+        {"$schema": schema["$schema"], "$defs": defs, "$ref": f"#/$defs/{kind}"},
+        format_checker=FormatChecker(),
+    )
+    errors = sorted(validator.iter_errors(artifact), key=lambda err: list(err.absolute_path))
+    if errors:
+        rendered: list[str] = []
+        for error in errors:
+            path = ".".join(str(part) for part in error.absolute_path) or "<root>"
+            rendered.append(f"{path}: {error.message}")
+        raise BenchmarkContractError(f"{kind} contract violation: " + "; ".join(rendered))
     return artifact
 
 
-def _validate_confidence(value: Any, name: str) -> None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
-        raise BenchmarkContractError(f"{name} must be a number in [0, 1]")
+def source_bundle_sha256(documents: list[dict[str, Any]]) -> str:
+    identity = [
+        {"path": document["path"], "sha256": document["sha256"]}
+        for document in sorted(documents, key=lambda item: item["path"])
+    ]
+    return canonical_sha256(identity)
+
+
+def validate_case_manifest_consistency(manifest: dict[str, Any]) -> dict[str, Any]:
+    validate_artifact("case_manifest", manifest)
+    paths = [document["path"] for document in manifest["documents"]]
+    if len(paths) != len(set(paths)):
+        raise BenchmarkContractError("case_manifest contains duplicate document paths")
+    for path in paths:
+        relative = Path(path)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise BenchmarkContractError(
+                f"case_manifest document path must stay relative to source root: {path}"
+            )
+    expected = source_bundle_sha256(manifest["documents"])
+    if manifest["source_bundle_sha256"] != expected:
+        raise BenchmarkContractError(
+            "case_manifest.source_bundle_sha256 must equal the canonical digest "
+            "of sorted document path/sha256 pairs"
+        )
+    return manifest
+
+
+def verify_manifest_source_files(
+    manifest: dict[str, Any],
+    source_root: str | Path,
+) -> None:
+    validate_case_manifest_consistency(manifest)
+    root = Path(source_root).resolve()
+    for document in manifest["documents"]:
+        path = (root / document["path"]).resolve()
+        try:
+            path.relative_to(root)
+        except ValueError as exc:
+            raise BenchmarkContractError(
+                f"document path escapes source root: {document['path']}"
+            ) from exc
+        if not path.is_file():
+            raise BenchmarkContractError(f"missing source file: {document['path']}")
+        actual = file_sha256(path)
+        if actual != document["sha256"]:
+            raise BenchmarkContractError(
+                f"source hash mismatch for {document['path']}: "
+                f"expected {document['sha256']}, got {actual}"
+            )
 
 
 def load_artifact(path: str | Path, kind: str) -> dict[str, Any]:
-    with Path(path).open("r", encoding="utf-8") as handle:
-        artifact = json.load(handle)
-    return validate_artifact(kind, artifact)
+    artifact = json.loads(Path(path).read_text(encoding="utf-8"))
+    validate_artifact(kind, artifact)
+    return artifact
+
+
+def write_artifact(path: str | Path, artifact: dict[str, Any], kind: str) -> None:
+    validate_artifact(kind, artifact)
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(
+        json.dumps(artifact, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
