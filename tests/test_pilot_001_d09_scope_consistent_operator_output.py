@@ -30,6 +30,12 @@ def test_d09_rental_reconciles_operator_facing_service_semantics():
                 "procurement_scope": {"procurement_primary_scope": "services"},
             },
         },
+        "rfq_draft": {
+            "sections": [
+                "Перечень позиций и объём поставки",
+                "Подтверждение сроков, сертификатов и гарантий",
+            ]
+        },
         "trace": {"fallback_category": "SERVICES"},
         "final_recommendation": {
             "recommendation": "manual_review_required",
@@ -54,6 +60,16 @@ def test_d09_rental_reconciles_operator_facing_service_semantics():
     assert "преподав" not in joined
     assert "аудитор" not in joined
     assert "аренд" in joined
+    rfq_sections = result["rfq_draft"]["sections"]
+    rfq_joined = " ".join(rfq_sections).lower()
+    assert "объём поставки" not in rfq_joined
+    assert "сертификатов и гарантий" not in rfq_joined
+    assert "аренд" in rfq_joined
+    assert rfq_sections == [
+        "Предмет и существенные условия аренды",
+        "Срок, место и порядок исполнения по документам закупки",
+        "Документы и подтверждения, прямо требуемые закупкой",
+    ]
     assert result["trace"]["fallback_category"] == "RENTAL"
     context = result["requirements"]["analysis_context"]
     assert context["procurement_category"] == "RENTAL"
@@ -73,7 +89,13 @@ def test_d09_goods_output_is_untouched():
                 "next_actions": ["Проверить срок поставки."],
                 "canonical_procurement_model": {"procurement_scope": "goods"},
             }
-        }
+        },
+        "rfq_draft": {
+            "sections": [
+                "Перечень позиций и объём поставки",
+                "Подтверждение сроков, сертификатов и гарантий",
+            ]
+        },
     }
     original = repr(outputs)
     docs = [
