@@ -1,13 +1,53 @@
-from .contract import BenchmarkContractError, ReviewState, load_artifact, validate_artifact
-from .workflow import BenchmarkCaseWorkflow, WorkflowState
-from .comparator import compare_case
+from .comparator import COMPARATOR_VERSION, aggregate_scorecard, compare_case
+from .contract import (
+    CONTRACT_VERSION,
+    BenchmarkContractError,
+    canonical_sha256,
+    load_artifact,
+    source_bundle_sha256,
+    validate_artifact,
+    validate_case_manifest_consistency,
+    verify_manifest_source_files,
+    write_artifact,
+)
+from .workflow import (
+    BenchmarkCaseWorkflow,
+    ReviewState,
+    WorkflowState,
+    assert_blind_evaluator_bundle,
+    freeze_blind_labels,
+    prepare_evaluator_bundle,
+    promote_to_gold,
+    route_failure,
+    route_review,
+    validate_blind_label_consistency,
+    verify_frozen_labels,
+    verify_sut_after_freeze,
+)
 
 __all__ = [
     "BenchmarkCaseWorkflow",
     "BenchmarkContractError",
+    "COMPARATOR_VERSION",
+    "CONTRACT_VERSION",
     "ReviewState",
     "WorkflowState",
+    "aggregate_scorecard",
+    "assert_blind_evaluator_bundle",
+    "canonical_sha256",
     "compare_case",
+    "freeze_blind_labels",
     "load_artifact",
+    "prepare_evaluator_bundle",
+    "promote_to_gold",
+    "route_failure",
+    "route_review",
+    "source_bundle_sha256",
     "validate_artifact",
+    "validate_blind_label_consistency",
+    "validate_case_manifest_consistency",
+    "verify_frozen_labels",
+    "verify_manifest_source_files",
+    "verify_sut_after_freeze",
+    "write_artifact",
 ]
