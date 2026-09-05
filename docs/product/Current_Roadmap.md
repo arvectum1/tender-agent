@@ -1,294 +1,297 @@
 # Tender Agent — Current Roadmap
 
 Updated: 2026-09-05
-Baseline product HEAD before this roadmap update: `fe7c3c5384a2fb6ad362a68a43ede23f1f885dd5`
+Latest product-code baseline observed before roadmap documentation commits: `fa443a158ef1fa6e2f960ad5b2d59e3f9f99dba2`
 
 ## 1. Executive status
 
-Tender Agent has moved beyond architecture recovery and single-case proof-of-capability.
+Tender Agent is past architecture recovery, Commercial MVP packaging, single-case proof-of-capability, and the main PILOT-001 analysis hardening cycle.
 
-The repository now contains the recovered canonical business registry, Commercial MVP v1, restricted pilot packaging, a real Mac mini read-only E2E flow, governed ARV-001 quality acceptance, and repeated PILOT-001 hardening across evidence grounding, source-fact recall, procurement-scope semantics, operator output consistency, and RFQ presentation.
+The repository now contains:
 
-The product is **not** yet an autonomous procurement platform. The current operating boundary remains operator-assisted and read-only with respect to procurement participation: no autonomous bid submission, no EDS/signature workflow, no supplier email automation, and no uncontrolled external execution.
+- the recovered canonical business registry `M-001..M-055`;
+- Commercial MVP v1 and restricted-pilot packages;
+- real Mac mini read-only procurement E2E;
+- governed ARV-001 quality acceptance;
+- PILOT-001 hardening through D04..D09.1;
+- a new Supplier Engine branch with `SUPPLIER-ENGINE-001`, `002`, `002.1`, and `003` merged.
 
-The immediate critical path is no longer feature development. It is the **final post-merge Product Owner replay of PILOT-001 after D09.1**, followed by governed closure of PILOT-001 if the replay passes.
+The product is still operator-assisted and restricted. No autonomous bid submission, EDS/signature, supplier email automation, or uncontrolled external execution is authorized.
 
-## 2. Where we are now
+## 2. Governance status: PILOT-001
 
-### Governed quality and runtime milestones
+PILOT-001 historical issue #23 remains technically OPEN and its body is stale: it still describes the earlier D04 closure gate.
 
-- ARV-001 governed quality acceptance: `CLOSED / FROZEN`.
-- Decision-useful human-facing report baseline: accepted.
-- Mac mini autonomous procurement discovery → analysis → HTML report: accepted single-case E2E.
-- Reproducible dependency lock: implemented.
-- PILOT-001 multi-case validation: executed; the historical batch exposed systematic analysis defects that triggered D04..D09.1 hardening.
-- D01 runtime staleness: closed.
-- D02 Basic Auth runtime boundary: closed.
-- D03 external storage/readiness: closed.
-- D04 grounded deterministic fallback: implemented and iteratively strengthened through D04.2..D04.6.
-- D08 source-first GOODS extraction and material source-fact retention: implemented.
-- D07 evidence-based procurement scope semantics: implemented.
-- D07.1 semantic scope preservation through serialization: implemented.
-- D09 scope-consistent operator output: implemented.
-- D09.1 scope-consistent RFQ draft for RENTAL/MIXED/UNRESOLVED: implemented and merged.
+However, later repository history shows the post-D04 hardening sequence completed through:
 
-### Current gate
+- D08.1 source-first GOODS extraction;
+- D08.2 source-fact recall/retention;
+- D07 evidence-based procurement scope semantics;
+- D07.1 semantic scope preservation through serialization;
+- D09 scope-consistent operator output;
+- D09.1 scope-consistent RFQ draft.
 
-`FINAL POST-MERGE PILOT-001 PO REPLAY`
+PR #42 (`SUPPLIER-ENGINE-001`) explicitly records the working assumption that `PILOT-001 is already closed PASS on the current main baseline` and starts the agreed next Supplier Engine workstream.
 
-The replay must verify the repaired RENTAL case and GOODS controls on the latest accepted runtime without reopening extraction/evidence contracts.
+Therefore the current state is:
 
-If PASS:
+- **product-development reality:** PILOT-001 has exited the critical path and Supplier Engine development has started;
+- **issue bookkeeping:** issue #23 is still open/stale and should be reconciled/closed only against the final PO replay evidence.
 
-1. record final Product Owner decision;
-2. reconcile the stale body of issue #23 with the actual D04..D09.1 history;
-3. close PILOT-001;
-4. move the critical path from analysis stabilization to full pre-bid decision-cycle operationalization.
-
-If FAIL:
-
-- classify the exact new defect from the replay;
-- open only the smallest closure branch necessary;
-- do not broaden scope speculatively.
+This bookkeeping inconsistency is governance debt, not a functional blocker for current Supplier Engine work.
 
 ## 3. Canonical architecture coverage
 
-The locked registry is `M-001..M-055`.
+Locked registry: `M-001..M-055`.
 
-Repository governance currently records:
+Repository governance records:
 
 - canonical exact implementation: `M-001..M-048` and `M-051`;
 - bounded internal metadata/control implementation: `M-049`, `M-050`;
-- reconciled late slots that are explicitly not full runtime modules:
+- reconciled late slots, explicitly not full runtime modules:
   - `M-052` Notification Layer — `PLATFORM_ONLY`;
   - `M-053` Red Flag Registry — `GOVERNANCE_ONLY`;
   - `M-054` Master Dashboard — `PLATFORM_ONLY`;
   - `M-055` SaaS Productization Tracker — `GOVERNANCE_ONLY`.
 
-This means the next phase should **not** rebuild Supplier, Finance/Risk, or Bid modules from zero. The next job is to operationalize and validate the existing canonical capabilities in real tender cycles.
+The roadmap is therefore no longer about implementing the module registry from zero. The job is to operationalize the implemented modules into a repeatable real tender-business lifecycle.
 
-## 4. First-wave business lifecycle — status by block
+## 4. First-wave lifecycle — actual maturity
 
 ### Block A — Platform skeleton
 
-Target modules: M-001, M-002, M-003, M-004, M-051, plus integration/notification support.
+Status: **implemented and operationally exercised**.
 
-Status: **implemented / operationally exercised**.
-
-Evidence includes canonical deal/status/document/audit foundations, workflow/runtime contours, controlled operator console/workspaces, access boundary, storage readiness, audit/evidence flows, and Mac mini runtime execution.
-
-Remaining work is hardening and governance, not greenfield construction.
+Deal/status/document/audit foundations, controlled workflow/runtime contours, access boundary, external storage/readiness, operator workspace, evidence and report flows are present.
 
 ### Block B — Intake & analysis
 
-Target: tender intake, document ingestion, screening, scoring, summary, compliance/requirements, early risk.
+Status: **most mature / deeply validated**.
 
-Status: **strongest and most heavily validated product block**.
+Current real 44-FZ flow:
 
-The current real 44-FZ flow covers:
+`public search → relevance selection → document intake → completeness → evidence-grounded analysis → human report`.
 
-`public search → relevance selection → documents → completeness → deterministic/LLM analysis → evidence-grounded human report`.
+PILOT-001 materially hardened evidence binding, numeric units, source-fact recall, procurement scope semantics, downstream operator guidance, and RFQ semantics.
 
-PILOT-001 hardening has materially improved:
+Remaining source robustness debt:
 
-- evidence binding;
-- numeric value + unit semantics;
-- source-fact recall;
-- procurement type/scope classification;
-- downstream semantic consistency;
-- RFQ presentation consistency.
+- D05 incomplete document sets — safe fail-closed behavior is correct; root cause remains worth investigating later;
+- D06 EIS `unsupported_layout` — unresolved single source-layout case.
 
-Current unresolved robustness items remain separate:
+### Block C — Supplier Engine
 
-- D05 incomplete document sets — safe fail-closed behavior is correct, root cause / source completeness deserves later investigation;
-- D06 EIS `unsupported_layout` — one unresolved source-layout occurrence, currently non-systematic.
+Status: **ACTIVE CURRENT WORKSTREAM**.
 
-### Block C — Supplier engine
+Canonical supplier modules already exist, and Commercial MVP has manual supplier/TKP flows. The new Supplier Engine workstream is turning that into stronger automated discovery/matching while preserving manual external actions.
 
-Target modules: M-006, M-016..M-021.
+Merged increments:
 
-Repository status: **canonical implementation exists**.
+#### SUPPLIER-ENGINE-001 — position-level supplier offer matching
 
-Product status: **partially operationalized in commercial/pilot workflows, but not yet proven as a repeated real supplier-side cycle**.
+- unified procurement-position / supplier-offer contract;
+- per-offer source attribution;
+- deterministic identity matching by article/model/brand/manufacturer/title;
+- VAT/MOQ/lead-time normalization without invented defaults;
+- conflicting explicit article numbers rejected;
+- ranked matches without autonomous commercial winner selection.
 
-Already present in product contours:
+#### SUPPLIER-ENGINE-002 — public offer discovery adapter
 
-- supplier profile relevance;
-- RFQ-first operator workflow;
-- RFQ draft generation;
-- manual supplier/TKP registration;
-- quote normalization/comparison;
-- supplier-side artifacts inside the commercial workspace.
+- position-aware public web search queries;
+- public search result → `SupplierOfferCandidate` conversion;
+- source-evidenced price/VAT/MOQ/delivery extraction;
+- marketplace filtering and supplier-domain deduplication;
+- direct handoff into the SE-001 ranking core;
+- provider failures propagated without fabricated offers.
 
-Still intentionally manual/closed:
+#### SUPPLIER-ENGINE-002.1 — RU/EN identifier evidence normalization
 
-- supplier outbound communication;
-- autonomous RFQ sending;
+- Cyrillic/Latin transliteration support for article/model identifiers;
+- prevents false misses such as `КМИ-22510` vs `KMI-22510`;
+- empty search-result titles no longer receive fabricated procurement-position fallback text.
+
+#### SUPPLIER-ENGINE-003 — product-page enrichment
+
+- bounded fetch of public supplier product pages;
+- reject private/local/unsafe targets and unsafe redirects;
+- extract source-backed price, VAT, MOQ, delivery, availability and identifiers;
+- preserve per-field evidence/source URL;
+- keep missing terms unknown rather than invent defaults.
+
+Still intentionally closed:
+
+- supplier email/outbound automation;
+- autonomous RFQ send;
+- autonomous ordering or purchase;
 - unattended supplier negotiation.
-
-Next business-value validation should use real supplier/TKP inputs while keeping outbound actions manual.
 
 ### Block D — Finance / risk / approval
 
-Target modules: M-022..M-028.
+Status: **implemented in bounded operator form; awaiting stronger real-cycle integration with the new Supplier Engine**.
 
-Repository status: **canonical implementation exists**.
+Commercial workspace already supports:
 
-Product status: **available in bounded commercial/operator form, not yet accepted as a repeated real end-to-end decision cycle**.
+- manual TKP registration;
+- quote comparison;
+- deterministic cost model;
+- cash-gap estimate;
+- financing strategy;
+- finance memo;
+- contract risk;
+- CEO approval package;
+- bid-readiness status.
 
-Already present:
-
-- deterministic economics/TKP workspace;
-- calibrated contract risk;
-- bid-readiness recommendation;
-- manual review and operator decision boundary.
-
-Next validation must prove that real supplier quotes can flow through:
-
-`supplier offers → economics → contract risk → integrated recommendation → formal GO / NO-GO decision`.
+The next strategic integration is to feed SE-001..003 supplier offers and manual TKPs into one comparison/economics decision contour.
 
 ### Block E — Bid / submission / outcome
 
-Target first-wave path: required docs → package → completeness → submission record → post-submission → outcome.
+Status: **canonical/recovery coverage exists; external execution remains restricted**.
 
-Repository status: **canonical/recovery coverage exists**.
+The commercial workspace already creates bid document collection, bid package skeleton and completeness/readiness state. Final submission remains manual; no ETP mutation, EDS/signature, or autonomous submission is open.
 
-Product operating status: **not opened as autonomous external execution**.
+## 5. Product maturity timeline
 
-Current restrictions remain correct:
-
-- final submission manual;
-- no ETP mutation/login automation;
-- no EDS/signature automation;
-- no autonomous procurement participation.
-
-The next useful step after Supplier/Finance validation is a controlled bid-preparation cycle that produces a complete application package and manual-submission receipt/audit trail without yet automating submission.
-
-## 5. Product maturity layers
-
-### Completed
+### Completed phases
 
 - architecture recovery and registry reconciliation;
-- Commercial MVP v1 repository package;
+- Launch/controlled internal usage packages;
+- Commercial MVP v1;
 - controlled commercial pilot package;
 - design-partner pilot package;
-- restricted paid pilot operations setup;
-- partner tender folder runner;
-- Tender Operator RFQ-first refinement;
-- access boundary / workspace / redaction / export / feedback loop;
-- ARV-001 quality acceptance;
-- real Mac mini E2E;
-- PILOT-001 analysis hardening through D09.1.
+- restricted paid pilot operations setup (PP0);
+- real partner folder runner (PP1);
+- Tender Operator RFQ-first refinement (PP1R);
+- ARV-001 quality freeze;
+- real Mac mini read-only E2E;
+- PILOT-001 hardening D04..D09.1.
 
-### Current
+### Current phase
 
-- final PILOT-001 post-merge PO replay and closure.
+**Supplier Engine operationalization.**
 
-### Next product stage
+SE-001..003 are merged. The system can now match procurement positions to supplier offers, discover public offers, normalize identifiers, and enrich from product pages under bounded safety rules.
 
-**Operationalize the full pre-bid decision cycle on real tenders.**
+### Next product phase
 
-Recommended scope:
+**Unify Supplier Engine outputs with TKP / quote comparison / economics / risk / owner decision.**
 
-1. real procurement intake;
-2. real supplier shortlist / manually controlled RFQ;
-3. real TKP registration;
-4. quote comparison;
-5. economics and cash-gap inputs;
-6. contract risk;
-7. integrated GO / NO-GO memo;
-8. owner decision record;
-9. complete audit trail.
+Target cycle:
 
-The goal is to prove not just “the analyzer writes a correct report”, but “the system supports a real commercial decision from tender discovery through supplier economics”.
+`procurement position → public offers + manual TKP → normalized offer set → comparison → economics → contract risk → GO/NO-GO → audit trail`.
 
-### Following stage
+### Following phase
 
-Controlled bid-package preparation:
+Controlled bid package lifecycle:
 
-- required document checklist;
-- collected-document register;
-- completeness gate;
-- package build;
-- manual submission;
-- proof-of-submission record;
-- outcome tracking.
+`required docs → collected docs → completeness → package → ready_for_human_submission → manual submission → receipt → outcome`.
 
-This would complete the first-wave business lifecycle without opening unsafe autonomy.
+This is the path to proving the full first-wave business lifecycle without prematurely opening unsafe autonomy.
 
-## 6. Parallel workstreams
+## 6. Recommended next Supplier Engine increment
 
-### P0 — PILOT-001 closure
+No canonical `SUPPLIER-ENGINE-004` task is currently recorded in the repository.
 
-Final post-merge PO replay on latest main, then close issue #23 if PASS.
+Recommended next increment:
 
-### P1 — Real supplier/economics decision cycle
+**comparison-ready offer set / M-021 handoff**
 
-Use existing Supplier + TKP + Economics + Contract Risk capabilities on real GOODS procurements. Keep outbound actions manual.
+Scope:
 
-### P1 — Controlled LLM runtime reliability
+1. merge enriched public offers and manual TKP offers into one normalized per-position offer set;
+2. preserve `source_type`, source URL/artifact ref, evidence for every commercial field;
+3. keep price/VAT/MOQ/lead time/availability unknown when not evidenced;
+4. separate eligibility/match quality from commercial ranking;
+5. feed only eligible candidates into existing quote comparison/economics;
+6. produce explicit unresolved-data flags instead of choosing a fake winner;
+7. remain read-only and never contact suppliers automatically.
 
-Single-case local LLM E2E has passed, but the historical multi-case pilot produced fallback-heavy evidence. Separately validate that local LLM completion is repeatable without weakening deterministic fallback or source grounding.
+After that, run a real operator-controlled supplier/economics cycle on several GOODS procurements.
+
+## 7. Parallel workstreams
+
+### P0 — Supplier Engine integration
+
+SE-001..003 are merged. Next: comparison-ready offer set + M-021/TKP/economics handoff + real-cycle validation.
+
+### P1 — PILOT-001 governance reconciliation
+
+Resolve the mismatch between stale/open issue #23 and the later repository assertion that PILOT-001 is PASS. Do not redo product work unless the final replay evidence actually shows a blocker.
+
+### P1 — Controlled LLM multi-case reliability
+
+Single-case local LLM E2E passed, but historical multi-case evidence was fallback-heavy. Validate repeatability separately without weakening deterministic evidence grounding.
 
 ### P1 — Commercial/legal pilot readiness
 
-Maintain restricted pilot rules, local data handling, acceptance criteria, feedback capture, and human-control boundaries before any broader external motion.
+Keep local data handling, restricted pilot terms, feedback capture, human review and manual external actions mandatory before broader customer circulation.
 
 ### P2 — D05 document completeness
 
-Determine whether incomplete document sets are upstream EIS limitations or an intake coverage gap. Preserve fail-closed behavior.
+Classify upstream EIS incompleteness vs intake coverage gap; preserve fail-closed behavior.
 
 ### P2 — D06 source-layout robustness
 
-Reproduce/classify the `unsupported_layout` case before changing parsing logic.
+Reproduce/classify `unsupported_layout` before changing parsers.
 
 ### P2 — Source expansion
 
-After the current 44-FZ contour is stable, expand toward additional procurement sources. Treat 223-FZ and private industrial procurement connectors as separate source contracts rather than contaminating the accepted 44-FZ path.
+Keep the accepted 44-FZ contour stable and add other procurement sources as separate connectors/contracts. 223-FZ and private industrial sources should not silently change the accepted 44-FZ path.
 
 ### P2 — Domain ontology / electrical vertical
 
-Continue exact product characteristics, standards, normalization, synonymy, and truth-pack work. This should improve relevance and analysis quality without becoming a prerequisite for every procurement type.
+Improve exact characteristics, standards, normalization, aliases and truth packs to strengthen supplier matching and technical analysis.
 
 ### P2 — Operator UX / observability
 
-Prioritize only evidence-driven improvements: run queue, failure reason, report/review state, audit links, workload/cadence visibility.
+Prioritize evidence-driven improvements only: run queue, supplier candidate review, failure reasons, report/review state, audit links, workload visibility.
 
 ### P2 — Repository governance
 
-`main` branch protection / required checks are still not enforced at repository level. Add this as engineering hygiene after the current replay gate unless repository administration constraints prevent it.
+`main` branch protection / required checks remain unenforced at repository level. Fix when admin/tooling constraints allow.
 
 ### P2 — Arvectum OS integration
 
-Continue integration as a consumer/orchestrator of Tender Agent product contracts. Do not make Arvectum OS a prerequisite for Tender Agent operational validation.
+Continue as a consumer/orchestrator of Tender Agent contracts, but do not make OS integration a prerequisite for Tender Agent business-cycle validation.
 
-### P3 — Historical P8.05 / EIS SOAP temporal health
+### P3 — historical P8.05 SOAP temporal health
 
-Keep issue #1 separate from the product critical path. Do not reinterpret a new public EIS flow as an automatic PASS of the historical strict temporal gate.
+Issue #1 remains separate maintenance/governance debt and must not be treated as a blocker for the current public-read-only product contour.
 
-## 7. Deferred / not authorized
+## 8. Deferred / not authorized
 
 Do not open yet:
 
 - autonomous bid submission;
-- ETP login/mutation automation;
+- ETP mutation/login automation;
 - EDS/signature;
 - supplier email automation;
+- autonomous ordering/purchase;
 - unattended external execution;
 - broad agent autonomy;
 - self-serve SaaS claims;
-- multi-tenant SaaS hardening before real repeat-use evidence;
-- broad runtime expansion of M-049/M-050;
-- promotion of M-052..M-055 to full runtime modules without a separate approved phase.
+- multi-tenant SaaS hardening before repeat-use evidence;
+- broad M-049/M-050 runtime expansion;
+- promotion of M-052..M-055 to full runtime modules without a separately approved phase.
 
-## 8. Critical path from here
+## 9. Critical path
 
 ```text
-D09.1 merged
+ARV-001 quality freeze ✅
   ↓
-FINAL PILOT-001 PO REPLAY
-  ↓ PASS
-PILOT-001 CLOSED
+Mac mini real E2E ✅
+  ↓
+PILOT-001 D04..D09.1 hardening ✅
+  ↓
+Supplier Engine 001 matching ✅
+  ↓
+Supplier Engine 002 public discovery ✅
+  ↓
+Supplier Engine 002.1 identifier normalization ✅
+  ↓
+Supplier Engine 003 product-page enrichment ✅
+  ↓
+COMPARISON-READY OFFER SET + M-021/TKP HANDOFF ← CURRENT NEXT
   ↓
 REAL SUPPLIER + TKP + ECONOMICS + RISK + GO/NO-GO CYCLE
   ↓
@@ -298,26 +301,15 @@ MANUAL SUBMISSION + RECEIPT + OUTCOME AUDIT
   ↓
 FIRST-WAVE BUSINESS LIFECYCLE PROVEN
   ↓
-REPEATED REAL PILOTS / COMMERCIAL EVIDENCE
+REPEATED REAL COMMERCIAL PILOTS
   ↓
 SOURCE EXPANSION + PRODUCT HARDENING
   ↓
-ONLY THEN: broader automation / SaaS / external execution review
+ONLY THEN: broader automation / SaaS / external-execution review
 ```
-
-## 9. Immediate next step
-
-Run the final post-merge PILOT-001 PO replay on latest `main` with:
-
-- repaired RENTAL Case 03;
-- GOODS control cases 04/05/06/08;
-- no new product-code changes during replay;
-- explicit confirmation that scope/category, next actions, recommendation semantics, RFQ sections, D08 source facts, and evidence provenance remain mutually consistent.
-
-If PASS, close PILOT-001 and immediately open the next operational milestone around **real Supplier/TKP/Economics/Risk/GO-NO-GO validation**, using existing canonical modules rather than rebuilding them.
 
 ## 10. Roadmap principle
 
-From this point forward, roadmap priority is determined by **operational evidence and business-cycle completion**, not by the count of implemented modules.
+The repository already has broad canonical module coverage. Roadmap priority is now determined by **business-cycle evidence and integration quality**, not by the number of module files or endpoints implemented.
 
-The repository already contains broad canonical coverage. The remaining strategic job is to turn that coverage into a proven, repeatable, auditable tender-business workflow under controlled human boundaries.
+The strategic job is to make the existing modules work together on real procurements: source-bound analysis → supplier offers → TKP/economics → risk → owner decision → bid package → manual submission/outcome, while retaining explicit human control boundaries.
