@@ -17,7 +17,6 @@ import argparse
 import base64
 import hashlib
 import json
-import os
 import sys
 import zipfile
 from datetime import UTC, date, datetime, timedelta
@@ -66,7 +65,11 @@ def _safe_name(value: str, fallback: str) -> str:
 
 
 def select_exact_card(cards: list[dict[str, Any]], registry_number: str) -> dict[str, Any]:
-    exact = [card for card in cards if isinstance(card, dict) and _registry_number(card) == registry_number]
+    exact = [
+        card
+        for card in cards
+        if isinstance(card, dict) and _registry_number(card) == registry_number
+    ]
     if not exact:
         discovered = sorted(
             {
@@ -82,6 +85,43 @@ def select_exact_card(cards: list[dict[str, Any]], registry_number: str) -> dict
         )
     exact.sort(key=lambda item: str(item.get("publication_date") or ""), reverse=True)
     return exact[0]
+
+
+def source_only_handoff(
+    client: BackendClient,
+    *,
+    card: dict[str, Any],
+    registry_number: str,
+) -> dict[str, Any]:
+    """Create an intake run while explicitly forbidding automatic analysis."""
+    source_url = str(card.get("source_url") or "").strip()
+    if not source_url:
+        raise E2EBlocked(
+            "missing_procurement_source_url",
+            "Exact public procurement card has no source URL; calibration cannot preserve provenance.",
+            details={"registry_number": registry_number},
+        )
+    payload = {
+        "source": str(card.get("source") or "public_eis_html_44fz"),
+        "law": "44fz",
+        "reestr_number": registry_number,
+        "source_url": source_url,
+        "title": card.get("title"),
+        "customer_name": card.get("customer_name"),
+        "initial_price": card.get("initial_price"),
+        "publication_date": card.get("publication_date"),
+        "deadline": card.get("deadline"),
+        "currency": card.get("currency") or "RUB",
+        "status": card.get("status"),
+        "procedure_type": card.get("procedure_type"),
+        "download_archive": True,
+        "analyze_after_download": False,
+    }
+    return client._json(
+        "POST",
+        "/api/demo/tender-agent/runs/from-search-result",
+        payload=payload,
+    )
 
 
 def assert_source_only_run(run_payload: dict[str, Any]) -> None:
@@ -133,7 +173,7 @@ def _download_bytes(
         headers["Authorization"] = authorization
     request = Request(f"{base_url.rstrip('/')}{path}", headers=headers, method="GET")
     try:
-        with urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310 - localhost/operator URL by design
+        with urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310 - local operator URL by design
             return response.read()
     except HTTPError as exc:
         raise E2EBlocked(
@@ -155,6 +195,12 @@ def build_case_manifest(
     source_documents: list[dict[str, str]],
     acquired_at: str,
 ) -> dict[str, Any]:
+    procurement_url = str(procurement.get("procurement_url") or "").strip()
+    if not procurement_url:
+        raise E2EBlocked(
+            "missing_procurement_source_url",
+            "Calibration run has no exact public procurement URL.",
+        )
     documents = [
         {
             "path": item["path"],
@@ -164,7 +210,7 @@ def build_case_manifest(
         for item in source_documents
     ]
     source_urls: list[str] = []
-    for candidate in [procurement.get("source_url"), *(item["source_url"] for item in documents)]:
+    for candidate in [procurement_url, *(item["source_url"] for item in documents)]:
         value = str(candidate or "").strip()
         if value and value not in source_urls:
             source_urls.append(value)
@@ -185,9 +231,9 @@ def build_case_manifest(
             ),
             "title": str(procurement.get("tender_title") or ""),
             "customer_name": str(procurement.get("customer_name") or ""),
-            "law": str(procurement.get("procurement_law") or procurement.get("tender_category") or "44-ФЗ"),
+            "law": str(procurement.get("procurement_law") or "44-ФЗ"),
             "source": str(procurement.get("procurement_source") or "public_eis_html_44fz"),
-            "source_url": str(procurement.get("procurement_url") or "https://zakupki.gov.ru/"),
+            "source_url": procurement_url,
         },
         "source_urls": source_urls,
         "acquired_at": acquired_at,
@@ -263,15 +309,16 @@ def prepare_phase_a(
         date_from=(today - timedelta(days=search_days)).isoformat(),
         date_to=today.isoformat(),
     )
-    card = select_exact_card(search.get("cards") or [], registry_number)
+    cards = search.get("cards") or []
+    if not isinstance(cards, list):
+        raise E2EBlocked(
+            "search_invalid_shape",
+            "Public 44-FZ search returned a non-list cards field.",
+            details={"outcome": search.get("outcome")},
+        )
+    card = select_exact_card(cards, registry_number)
 
-    from scripts.run_macmini_autonomous_procurement import Selection  # local import after exact match
-
-    handoff = client.handoff(
-        Selection(card=card, registry_number=registry_number, relevance_score=0.0),
-        law="44fz",
-        analyze_after_download=False,
-    )
+    handoff = source_only_handoff(client, card=card, registry_number=registry_number)
     run_id = str(handoff.get("run_id") or "").strip()
     if not run_id:
         raise E2EBlocked("missing_run_id", "Source-only handoff did not return a run_id.")
@@ -282,7 +329,11 @@ def prepare_phase_a(
     source_map = _attachment_source_map(procurement_details)
     procurement_url = str(run_payload.get("procurement_url") or card.get("source_url") or "").strip()
     if not procurement_url:
-        procurement_url = "https://zakupki.gov.ru/"
+        raise E2EBlocked(
+            "missing_procurement_source_url",
+            "Source-only calibration run cannot be tied to an exact public procurement URL.",
+            details={"run_id": run_id, "registry_number": registry_number},
+        )
 
     files = run_payload.get("files") or []
     if not files:
@@ -334,12 +385,13 @@ def prepare_phase_a(
         raise E2EBlocked("no_downloadable_source_files", "No source bytes could be copied into the case bundle.")
 
     case_id = f"calibration-44fz-{registry_number}"
-    acquired_at = _now_iso()
+    manifest_procurement = dict(run_payload)
+    manifest_procurement["procurement_url"] = procurement_url
     manifest = build_case_manifest(
         case_id=case_id,
-        procurement=run_payload,
+        procurement=manifest_procurement,
         source_documents=source_documents,
-        acquired_at=acquired_at,
+        acquired_at=_now_iso(),
     )
     write_artifact(case_dir / "case_manifest.json", manifest, "case_manifest")
     verify_manifest_source_files(manifest, case_dir)
@@ -400,7 +452,12 @@ def main() -> int:
     except E2EBlocked as exc:
         print(
             json.dumps(
-                {"status": "BENCHMARK_CALIBRATION_PHASE_A_BLOCKED", "code": exc.code, "message": exc.message, "details": exc.details},
+                {
+                    "status": "BENCHMARK_CALIBRATION_PHASE_A_BLOCKED",
+                    "code": exc.code,
+                    "message": exc.message,
+                    "details": exc.details,
+                },
                 ensure_ascii=False,
                 sort_keys=True,
             )
