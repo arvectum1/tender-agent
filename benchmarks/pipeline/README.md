@@ -2,23 +2,29 @@
 
 Shared benchmark contract and blind-evaluation workflow for Tender Agent discovery and document-analysis QA.
 
-## Contract
+## Canonical contract
 
-Contract version: `1.0.0`.
+Contract version: `1.1.0`.
 
-Machine-readable schema: `benchmarks/pipeline/schema/v1/benchmark-artifacts.schema.json`.
+Machine-readable schema:
+`benchmarks/pipeline/schema/1.1.0/benchmark-artifacts.schema.json`.
+
+The previous `1.0.0` schema remains in the repository as historical evidence; new calibration artifacts use `1.1.0`.
 
 Artifact classes:
 
 - `case_manifest`
+- `evaluator_bundle`
 - `blind_discovery_label`
 - `blind_document_truth`
+- `frozen_label`
 - `tender_agent_output_ref`
+- `normalized_sut_output`
 - `comparison_result`
 - `review_state`
 - `aggregate_scorecard`
 
-Review states are machine-readable and mutually explicit:
+Review states are explicit and machine-readable:
 
 - `AI_CURATED_SILVER`
 - `NEEDS_REVIEW`
@@ -26,52 +32,115 @@ Review states are machine-readable and mutually explicit:
 
 ## Anti-circularity invariant
 
-The workflow enforces this order in code:
+The enforced order is:
 
-`public source bundle -> evaluator bundle -> freeze blind labels -> attach Tender Agent output -> compare -> route review`
+`public source bundle -> evaluator bundle -> blind labels -> freeze -> Tender Agent output -> comparator -> review routing`
 
-`BenchmarkCaseWorkflow.attach_sut_output()` rejects output before label freeze. `evaluator_bundle()` is reconstructed only from `case_manifest` source fields and is unavailable after the first-pass labels are frozen. The evaluator bundle therefore has no Tender Agent ranking, extracted facts, output refs, score reasons or comparator result.
+The evaluator bundle is reconstructed from source-only manifest fields. SUT-derived keys such as ranking, scores, reports, extracted facts, artifact references and Tender Agent outputs are rejected recursively.
 
-The frozen discovery/document labels receive immutable-content hashes (`freeze_hash`). Human gold promotion changes only `review_state`; it does not rewrite the frozen source truth.
+A freeze receipt binds all first-pass truth to immutable digests:
 
-## Comparator
+- source bundle;
+- case manifest;
+- evaluator bundle;
+- blind discovery label;
+- blind document truth;
+- combined label set.
 
-`src/modules/benchmark_pipeline/comparator.py` provides a deterministic first comparator:
+Tender Agent output is accepted only when it:
 
-- discovery exact-label match and optional ranking delta;
+1. belongs to the same case and source bundle;
+2. is explicitly bound to the frozen label-set digest;
+3. has a normalized-output digest matching the referenced output;
+4. was produced strictly after the blind-label freeze timestamp.
+
+Changing the evaluator bundle, label, truth or manifest after freeze fails validation rather than silently changing benchmark truth.
+
+## Discovery and document semantics
+
+Discovery labels are exactly:
+
+- `RELEVANT`
+- `PARTIALLY_RELEVANT`
+- `IRRELEVANT`
+- `UNCLEAR`
+
+`UNCLEAR` is not scored as a discovery error. Document truth supports:
+`ASSERTED`, `UNKNOWN`, `INSUFFICIENT_EVIDENCE`, and `CONFLICTING_EVIDENCE`.
+
+The deterministic comparator records:
+
+- discovery exact match/mismatch or `NOT_SCORABLE`;
 - document TP/FP/FN;
-- unsupported SUT claims;
-- same-field contradictions;
-- missed asserted truth fields;
-- aggregate discovery/document scorecard.
+- contradictions;
+- missed asserted facts;
+- correct abstentions;
+- unsupported/unresolved assertions;
+- unlabeled SUT extras;
+- precision, recall and F1.
 
-Abstained evaluator facts (`UNKNOWN`, `INSUFFICIENT_EVIDENCE`) are not counted as false negatives and are never treated as asserted truth.
+Evaluator abstention is not converted into false benchmark certainty: an assertion against `UNKNOWN`, `INSUFFICIENT_EVIDENCE` or conflicting truth is marked unresolved rather than automatically counted as a false positive. Unlabeled SUT extras are unscored. Material unresolved assertions are routed for review.
+
+A mechanically classifiable Tender Agent error (for example, a wrong frozen fact value) is scored as a SUT error but does **not** by itself invalidate a high-confidence benchmark label. This separation prevents the tested system from poisoning the independent truth set.
 
 ## Review routing
 
-A compared case is routed to `NEEDS_REVIEW` when any implemented rule applies:
+`NEEDS_REVIEW` is used for benchmark-quality uncertainty, including:
 
-- discovery confidence is below the configured threshold;
-- document-truth confidence is below threshold;
-- unresolved source conflict is declared in the manifest;
-- provenance is insufficient;
-- comparator reports material disagreement;
-- comparator/schema validation reports failure.
+- evaluator confidence below threshold;
+- material source conflict;
+- weak source provenance;
+- material `UNKNOWN` / `INSUFFICIENT_EVIDENCE`;
+- material disagreement that cannot be mechanically classified;
+- schema/consistency failure.
 
-Otherwise the case remains `AI_CURATED_SILVER` until explicit Product Owner verification. `promote_to_gold()` requires Product Owner reviewer metadata and preserves the frozen label/truth hashes.
+Otherwise the independently labeled case remains `AI_CURATED_SILVER`. Only explicit Product Owner approval can create `HUMAN_VERIFIED_GOLD`; promotion changes review metadata, not frozen source truth.
 
-## Calibration scope
+## CLI and batchability
 
-The automated tests exercise three small calibration paths only:
+The repository CLI is `scripts/benchmark_pipeline.py`.
 
-1. matching high-confidence case -> `AI_CURATED_SILVER`;
-2. low-confidence/material-disagreement case -> `NEEDS_REVIEW`;
-3. matching case followed by explicit Product Owner promotion -> `HUMAN_VERIFIED_GOLD` without rewriting frozen truth.
+It supports contract validation, source-file verification, blind-bundle preparation, label freeze, comparison, review routing, Product Owner promotion, scorecard generation and batch comparison.
 
-These are workflow calibration fixtures, not procurement ground truth. The two Cybox cases and the RSL procurement must not be imported as benchmark evidence until their original public-source materials are acquired through the accepted product path, normalized into `case_manifest` bundles and re-labeled blind under this contract.
+A batch case directory uses:
 
-Do not scale to 30–50 procurements until the calibration gate confirms anti-circularity, schema validity, comparator behavior and review-state transitions on real imported source bundles.
+```text
+case_manifest.json
+evaluator_bundle.json
+blind_discovery_label.json
+blind_document_truth.json
+frozen_label.json
+tender_agent_output_ref.json
+normalized_sut_output.json
+comparison_result.json        # generated
+review_state.json              # generated
+```
 
-## Local runner boundary
+`batch-compare` processes already-frozen cases without Product Owner per-case orchestration and writes an aggregate scorecard. It does not collect procurements or perform external procurement actions.
 
-GitHub-hosted implementation and pure/offline contract tests belong in the repository/CI. Local Mac mini execution is required only for accepted-path source acquisition and Tender Agent runtime execution against real calibration procurements. The local runner is not a semantic source of truth.
+## Calibration gate
+
+Repository tests intentionally exercise only three workflow calibration paths:
+
+1. matching, high-confidence source truth -> `AI_CURATED_SILVER` -> explicit Product Owner gold promotion;
+2. low-confidence/insufficient source evidence plus material unclassified SUT assertions -> `NEEDS_REVIEW`;
+3. mechanically classifiable Tender Agent error -> scored SUT failure while independent truth remains `AI_CURATED_SILVER`.
+
+These are synthetic workflow fixtures, not procurement ground truth.
+
+Do **not** scale to 30–50 procurements yet.
+
+Before corpus growth, run the same contract on 1–3 real public procurement bundles. The intended seed set is the two previously reviewed Cybox/SciBox procurements and the RSL procurement, but their original public source materials must be re-imported through the accepted Tender Agent path. Previous prose conclusions are calibration context only and must not be copied as benchmark truth.
+
+## Local Mac mini boundary
+
+GitHub/CI owns the contract, schemas, comparator, review logic, batch tooling and offline tests.
+
+Mac mini/Codex is needed only where local execution is genuinely required:
+
+- acquire the original public procurement artifacts through the accepted Tender Agent runtime/source path;
+- compute and persist real file hashes/manifests;
+- run the real Tender Agent **after** the independent label freeze;
+- normalize/persist the actual runtime artifacts and execute the comparator on those 1–3 real cases.
+
+The local runner is not a semantic source of truth and must not see or rewrite the blind evaluator answer on behalf of Tender Agent.

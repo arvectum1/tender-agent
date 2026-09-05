@@ -1,111 +1,246 @@
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
-from .contract import CONTRACT_VERSION, validate_artifact
+from .contract import CONTRACT_VERSION, BenchmarkContractError, canonical_json, validate_artifact
+from .workflow import verify_frozen_labels, verify_sut_after_freeze
+
+
+COMPARATOR_VERSION = "1.1.0"
+UNCLASSIFIED_MATERIAL = "UNCLASSIFIED_MATERIAL_DISAGREEMENT"
+
+
+def _same_value(left: Any, right: Any) -> bool:
+    return canonical_json(left) == canonical_json(right)
 
 
 def compare_case(
     *,
-    case_id: str,
     discovery_label: dict[str, Any],
     document_truth: dict[str, Any],
-    sut_discovery: dict[str, Any],
-    sut_facts: list[dict[str, Any]],
+    evaluator_bundle: dict[str, Any],
+    freeze_receipt: dict[str, Any],
+    sut_ref: dict[str, Any],
+    sut_output: dict[str, Any],
+    compared_at: str,
+    comparator_version: str = COMPARATOR_VERSION,
 ) -> dict[str, Any]:
-    """Deterministic comparator for calibration and batch execution.
+    validate_artifact("normalized_sut_output", sut_output)
+    verify_frozen_labels(
+        freeze_receipt,
+        evaluator_bundle,
+        discovery_label,
+        document_truth,
+    )
+    verify_sut_after_freeze(sut_ref, sut_output, freeze_receipt)
 
-    Discovery is scored as an exact categorical match. Document facts are keyed by
-    `field`; abstained evaluator facts do not count as misses. Unsupported SUT claims
-    are facts absent from asserted evaluator truth. Contradictions are same-field,
-    different-value claims. Missing asserted evaluator fields are false negatives.
-    """
     expected_label = discovery_label["label"]
-    actual_label = sut_discovery.get("label", "UNCLEAR")
-    discovery_match = expected_label == actual_label
+    actual_label = sut_output["discovery"]["label"]
+    if expected_label == "UNCLEAR":
+        discovery_outcome = "NOT_SCORABLE"
+    else:
+        discovery_outcome = "MATCH" if expected_label == actual_label else "MISMATCH"
 
-    truth_by_field = {
-        fact["field"]: fact
-        for fact in document_truth["facts"]
-        if fact.get("abstention") == "ASSERTED"
-    }
-    sut_by_field = {fact["field"]: fact for fact in sut_facts if "field" in fact}
+    truth_fields = [fact["field"] for fact in document_truth["facts"]]
+    sut_fields = [fact["field"] for fact in sut_output["facts"]]
+    if len(truth_fields) != len(set(truth_fields)):
+        raise BenchmarkContractError("blind_document_truth contains duplicate fact fields")
+    if len(sut_fields) != len(set(sut_fields)):
+        raise BenchmarkContractError("normalized SUT output contains duplicate fact fields")
 
-    tp = 0
+    truth_by_field = {fact["field"]: fact for fact in document_truth["facts"]}
+    sut_by_field = {fact["field"]: fact for fact in sut_output["facts"]}
+    counts: Counter[str] = Counter()
+    items: list[dict[str, Any]] = []
+    unsupported: list[str] = []
     contradictions: list[dict[str, Any]] = []
     misses: list[str] = []
-    unsupported: list[str] = []
+    review_reasons: set[str] = set()
 
-    for field, truth in truth_by_field.items():
-        if field not in sut_by_field:
-            misses.append(field)
-            continue
-        if sut_by_field[field].get("value") == truth.get("value"):
-            tp += 1
+    for field, expected in sorted(truth_by_field.items()):
+        actual = sut_by_field.get(field)
+        expected_status = expected["abstention"]
+        materiality = expected["materiality"]
+
+        if expected_status == "ASSERTED":
+            if actual is None or actual["status"] in {"UNKNOWN", "INSUFFICIENT_EVIDENCE"}:
+                outcome = "FALSE_NEGATIVE"
+                counts["fn"] += 1
+                misses.append(field)
+            elif actual["status"] == "ASSERTED" and _same_value(
+                expected.get("value"), actual.get("value")
+            ):
+                outcome = "TRUE_POSITIVE"
+                counts["tp"] += 1
+            elif actual["status"] == "ASSERTED":
+                outcome = "CONTRADICTION"
+                counts["fp"] += 1
+                counts["fn"] += 1
+                contradictions.append(
+                    {
+                        "field": field,
+                        "expected": expected.get("value"),
+                        "actual": actual.get("value"),
+                    }
+                )
+            else:
+                outcome = "FALSE_NEGATIVE"
+                counts["fn"] += 1
+                misses.append(field)
         else:
-            contradictions.append(
-                {
-                    "field": field,
-                    "expected": truth.get("value"),
-                    "actual": sut_by_field[field].get("value"),
-                }
-            )
+            if actual is not None and actual["status"] == "ASSERTED":
+                outcome = "UNRESOLVED_ASSERTION"
+                unsupported.append(field)
+                if materiality == "MATERIAL":
+                    review_reasons.add(UNCLASSIFIED_MATERIAL)
+            else:
+                outcome = "ABSTENTION_MATCH"
+                counts["abstention_matches"] += 1
 
-    for field in sut_by_field:
-        if field not in truth_by_field:
+        items.append(
+            {
+                "field": field,
+                "materiality": materiality,
+                "expected_status": expected_status,
+                "actual_status": actual["status"] if actual is not None else "MISSING",
+                "outcome": outcome,
+            }
+        )
+
+    for field, actual in sorted(sut_by_field.items()):
+        if field in truth_by_field:
+            continue
+        counts["unscored_extras"] += 1
+        if actual["status"] == "ASSERTED":
             unsupported.append(field)
+            if actual["materiality"] == "MATERIAL":
+                review_reasons.add(UNCLASSIFIED_MATERIAL)
+        items.append(
+            {
+                "field": field,
+                "materiality": actual["materiality"],
+                "expected_status": "UNLABELED",
+                "actual_status": actual["status"],
+                "outcome": "UNLABELED_EXTRA",
+            }
+        )
 
-    fp = len(unsupported) + len(contradictions)
-    fn = len(misses) + len(contradictions)
-    material_disagreement = (not discovery_match) or bool(contradictions)
+    tp = counts["tp"]
+    fp = counts["fp"]
+    fn = counts["fn"]
+    precision = tp / (tp + fp) if tp + fp else None
+    recall = tp / (tp + fn) if tp + fn else None
+    f1 = (
+        2 * precision * recall / (precision + recall)
+        if precision is not None and recall is not None and precision + recall
+        else None
+    )
 
+    material_disagreement = (
+        discovery_outcome == "MISMATCH"
+        or bool(contradictions)
+        or UNCLASSIFIED_MATERIAL in review_reasons
+    )
     result = {
         "schema_version": CONTRACT_VERSION,
-        "case_id": case_id,
+        "case_id": freeze_receipt["case_id"],
+        "compared_at": compared_at,
+        "comparator_version": comparator_version,
+        "label_set_sha256": freeze_receipt["label_set_sha256"],
         "discovery": {
             "expected": expected_label,
             "actual": actual_label,
-            "match": discovery_match,
-            "ranking_delta": sut_discovery.get("ranking_delta"),
+            "outcome": discovery_outcome,
+            "ranking_delta": sut_output["discovery"].get("ranking_delta"),
         },
         "document": {
             "tp": tp,
             "fp": fp,
             "fn": fn,
-            "unsupported_claims": unsupported,
+            "abstention_matches": counts["abstention_matches"],
+            "unscored_extras": counts["unscored_extras"],
+            "precision": precision,
+            "recall": recall,
+            "f1": f1,
+            "unsupported_claims": sorted(set(unsupported)),
             "contradictions": contradictions,
-            "misses": misses,
+            "misses": sorted(set(misses)),
+            "items": items,
         },
         "material_disagreement": material_disagreement,
-        "review_reasons": [],
+        "review_reasons": sorted(review_reasons),
         "schema_valid": True,
     }
-    if not discovery_match:
-        result["review_reasons"].append("DISCOVERY_LABEL_MISMATCH")
-    if contradictions:
-        result["review_reasons"].append("DOCUMENT_CONTRADICTION")
     validate_artifact("comparison_result", result)
     return result
 
 
-def aggregate_scorecard(results: list[dict[str, Any]], review_states: list[dict[str, Any]]) -> dict[str, Any]:
+def aggregate_scorecard(
+    results: list[dict[str, Any]],
+    review_states: list[dict[str, Any]],
+    *,
+    generated_at: str,
+    comparator_version: str = COMPARATOR_VERSION,
+) -> dict[str, Any]:
+    for result in results:
+        validate_artifact("comparison_result", result)
+    for review in review_states:
+        validate_artifact("review_state", review)
+
+    result_ids = [result["case_id"] for result in results]
+    review_ids = [review["case_id"] for review in review_states]
+    if len(result_ids) != len(set(result_ids)):
+        raise BenchmarkContractError("scorecard comparisons contain duplicate case_id values")
+    if len(review_ids) != len(set(review_ids)):
+        raise BenchmarkContractError("scorecard reviews contain duplicate case_id values")
+    if set(result_ids) != set(review_ids):
+        raise BenchmarkContractError("scorecard requires exactly one review state per comparison")
+
+    discovery_scored = [
+        result for result in results if result["discovery"]["outcome"] != "NOT_SCORABLE"
+    ]
+    discovery_matches = sum(
+        result["discovery"]["outcome"] == "MATCH" for result in discovery_scored
+    )
     tp = sum(result["document"]["tp"] for result in results)
     fp = sum(result["document"]["fp"] for result in results)
     fn = sum(result["document"]["fn"] for result in results)
-    discovery_matches = sum(1 for result in results if result["discovery"]["match"])
-    states: dict[str, int] = {}
-    for review in review_states:
-        states[review["state"]] = states.get(review["state"], 0) + 1
     precision = tp / (tp + fp) if tp + fp else None
     recall = tp / (tp + fn) if tp + fn else None
+    f1 = (
+        2 * precision * recall / (precision + recall)
+        if precision is not None and recall is not None and precision + recall
+        else None
+    )
+    states = Counter(review["state"] for review in review_states)
+
     artifact = {
         "schema_version": CONTRACT_VERSION,
+        "generated_at": generated_at,
+        "comparator_version": comparator_version,
         "case_count": len(results),
-        "discovery": {
-            "exact_match_rate": discovery_matches / len(results) if results else None,
+        "review_states": {
+            "AI_CURATED_SILVER": states["AI_CURATED_SILVER"],
+            "NEEDS_REVIEW": states["NEEDS_REVIEW"],
+            "HUMAN_VERIFIED_GOLD": states["HUMAN_VERIFIED_GOLD"],
         },
-        "document": {"tp": tp, "fp": fp, "fn": fn, "precision": precision, "recall": recall},
-        "review_states": states,
+        "discovery": {
+            "scored": len(discovery_scored),
+            "matches": discovery_matches,
+            "accuracy": discovery_matches / len(discovery_scored) if discovery_scored else None,
+        },
+        "document": {
+            "tp": tp,
+            "fp": fp,
+            "fn": fn,
+            "precision": precision,
+            "recall": recall,
+            "f1": f1,
+        },
+        "needs_review_rate": (
+            states["NEEDS_REVIEW"] / len(results) if results else None
+        ),
     }
     validate_artifact("aggregate_scorecard", artifact)
     return artifact
