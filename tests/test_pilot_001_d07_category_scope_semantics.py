@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from src.modules.tender_operator_agent_demo import d07_scope_output_binding
 from src.modules.tender_operator_agent_demo.goods_source_facts import extract_goods_source_facts
 from src.modules.tender_operator_agent_demo.upload_service import (
     AnalyzedDocument,
@@ -141,3 +142,37 @@ def test_d07_resolved_rental_survives_service_framed_title_in_compatibility_chai
     assert scope["procurement_primary_scope"] == "rental"
     assert preliminary["procurement_kind"] == "rental"
     assert preliminary["scope"]["procurement_primary_scope"] == "rental"
+
+
+def test_d07_final_binding_does_not_reclassify_from_supporting_boilerplate():
+    title = "Аренда медицинского оборудования"
+    contract = _document(
+        "Арендодатель предоставляет оборудование за плату во временное владение и пользование.",
+        role="contract_draft",
+        file_id="FILE-01",
+    )
+    supporting = _document(
+        "Исполнитель оказывает услуги. Услуги оказываются в соответствии с условиями документации.",
+        role="supporting",
+        file_id="FILE-02",
+    )
+    metadata = {"tender_title": title, "procurement": {}}
+    outputs = {
+        "requirements": {
+            "preliminary_analysis": {"procurement_kind": "services"},
+            "analysis_context": {},
+        },
+        "trace": {},
+    }
+
+    rebound = d07_scope_output_binding._bind_semantic_scope(
+        outputs,
+        metadata=metadata,
+        documents=[contract, supporting],
+    )
+
+    preliminary = rebound["requirements"]["preliminary_analysis"]
+    assert preliminary["procurement_kind"] == "rental"
+    assert preliminary["scope"]["procurement_primary_scope"] == "rental"
+    assert preliminary["scope"]["goods_extraction_applicable"] is False
+    assert preliminary["scope"]["classification_evidence"]
