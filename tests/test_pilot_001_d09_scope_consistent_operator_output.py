@@ -70,7 +70,14 @@ def test_d09_goods_output_is_untouched():
         }
     }
     original = repr(outputs)
-    docs = [SimpleNamespace(text="Поставщик обязуется поставить товар.", display_name="contract.docx")]
+    docs = [
+        SimpleNamespace(
+            text="Поставщик обязуется поставить товар.",
+            display_name="contract.docx",
+            file_id="FILE-01",
+            semantic_role="CONTRACT_DRAFT",
+        )
+    ]
     result = _bind_operator_scope(
         outputs,
         metadata={"tender_title": "Поставка товара"},
