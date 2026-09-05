@@ -3,7 +3,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import socket
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from decimal import Decimal
 from html.parser import HTMLParser
 from typing import Literal, Protocol
