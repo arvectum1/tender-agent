@@ -32,6 +32,15 @@ _MOQ_RE = re.compile(
     re.IGNORECASE,
 )
 _MARKETPLACE_DOMAINS = ("avito.ru", "ozon.ru", "wildberries.ru", "market.yandex.ru")
+_TRANSLIT = str.maketrans(
+    {
+        "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
+        "ж": "zh", "з": "z", "и": "i", "й": "i", "к": "k", "л": "l", "м": "m",
+        "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+        "ф": "f", "х": "h", "ц": "c", "ч": "ch", "ш": "sh", "щ": "sch",
+        "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+    }
+)
 
 
 @dataclass
@@ -85,7 +94,8 @@ def _is_marketplace(result: YandexSearchResult) -> bool:
 def _normalize_identifier(value: str | None) -> str:
     if not value:
         return ""
-    return re.sub(r"[^0-9a-zа-я]+", "", value.casefold(), flags=re.IGNORECASE)
+    transliterated = value.casefold().translate(_TRANSLIT)
+    return re.sub(r"[^0-9a-z]+", "", transliterated, flags=re.IGNORECASE)
 
 
 def _evidenced_identifier(expected: str | None, evidence_text: str) -> str | None:
@@ -161,7 +171,7 @@ def search_result_to_candidate(
     return SupplierOfferCandidate(
         offer_id=_candidate_id(position.position_id, result.url),
         supplier_label=_supplier_label(result),
-        item_name=title or position.item_name,
+        item_name=title or _supplier_label(result),
         source_type="public_web",
         source_ref=result.url,
         source_url=result.url,
