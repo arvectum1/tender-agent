@@ -60,6 +60,10 @@ def _bind_operator_scope(outputs: dict[str, Any], *, metadata: dict[str, Any], d
     context = requirements.get("analysis_context")
     if isinstance(context, dict):
         context["procurement_category"] = primary.upper()
+        # Keep both the canonical operator-facing scope and the explicit
+        # semantic scope aligned. Older payload builders may have left a
+        # stale GOODS/SERVICES/WORKS-shaped procurement_scope here.
+        context["procurement_scope"] = deepcopy(scope)
         context["semantic_procurement_scope"] = deepcopy(scope)
 
     trace = outputs.get("trace")
