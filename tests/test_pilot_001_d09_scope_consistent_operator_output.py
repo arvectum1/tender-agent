@@ -25,7 +25,10 @@ def test_d09_rental_reconciles_operator_facing_service_semantics():
                 ],
                 "canonical_procurement_model": {"procurement_scope": "services"},
             },
-            "analysis_context": {"procurement_category": "SERVICES"},
+            "analysis_context": {
+                "procurement_category": "SERVICES",
+                "procurement_scope": {"procurement_primary_scope": "services"},
+            },
         },
         "trace": {"fallback_category": "SERVICES"},
         "final_recommendation": {
@@ -52,7 +55,10 @@ def test_d09_rental_reconciles_operator_facing_service_semantics():
     assert "аудитор" not in joined
     assert "аренд" in joined
     assert result["trace"]["fallback_category"] == "RENTAL"
-    assert result["requirements"]["analysis_context"]["procurement_category"] == "RENTAL"
+    context = result["requirements"]["analysis_context"]
+    assert context["procurement_category"] == "RENTAL"
+    assert context["procurement_scope"]["procurement_primary_scope"] == "rental"
+    assert context["semantic_procurement_scope"]["procurement_primary_scope"] == "rental"
     recommendation = result["final_recommendation"]
     assert recommendation["recommendation"] == "manual_review_required"
     assert all("преподав" not in value.lower() for value in recommendation["open_questions"])
