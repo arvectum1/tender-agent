@@ -113,6 +113,7 @@ def test_discovery_builds_position_query_filters_marketplaces_and_ranks_candidat
     assert outcome.error is None
     assert outcome.total_search_results == 4
     assert len(outcome.candidates) == 2
+    assert outcome.candidates[0].article == "KMI-22510"
     assert outcome.ranking is not None
     assert outcome.ranking.best_offer_id == outcome.candidates[0].offer_id
     assert client.queries and client.queries[0][1] == 7
