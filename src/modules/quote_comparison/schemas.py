@@ -1,5 +1,11 @@
 from datetime import datetime
 
+from pydantic import Field
+
+from src.modules.quote_comparison.comparison_ready_offer_set import (
+    ComparisonReadyOfferSet,
+)
+from src.modules.quote_comparison.position_matching import PositionOfferMatch
 from src.shared.enums import QuoteComparisonStatus
 from src.shared.types.common import APIModel
 
@@ -40,3 +46,24 @@ class QuoteComparisonSetResponse(APIModel):
     updated_at: datetime
     rows: list[QuoteComparisonRowResponse]
     recommendation: QuoteComparisonRecommendationResponse | None = None
+
+
+class FormalQuotePositionBindingRequest(APIModel):
+    """An explicit operator-provided link from an RFQ-level quote to one position."""
+
+    quote_id: str
+    supplier_label: str | None = None
+
+
+class BuildComparisonReadyOfferSetRequest(APIModel):
+    position_id: str
+    public_matches: list[PositionOfferMatch] = Field(default_factory=list)
+    best_public_offer_id: str | None = None
+    formal_quote_bindings: list[FormalQuotePositionBindingRequest] = Field(
+        default_factory=list
+    )
+    quote_comparison_set_id: str | None = None
+
+
+class ComparisonReadyOfferSetResponse(ComparisonReadyOfferSet):
+    pass
