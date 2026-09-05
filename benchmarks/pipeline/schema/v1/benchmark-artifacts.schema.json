@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arvectum.com/schemas/benchmark-pipeline/1.0.0/benchmark-artifacts.schema.json",
+  "title": "Arvectum Tender Agent Benchmark Pipeline Artifacts",
+  "version": "1.0.0",
+  "$defs": {
+    "evidenceRef": {
+      "type": "object",
+      "required": ["source_ref"],
+      "properties": {
+        "source_ref": {"type": "string", "minLength": 1},
+        "locator": {"type": ["string", "null"]},
+        "quote": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "caseManifest": {
+      "type": "object",
+      "required": ["schema_version", "case_id", "procurement", "source_urls", "acquired_at", "documents", "source_scope"],
+      "properties": {
+        "schema_version": {"const": "1.0.0"},
+        "case_id": {"type": "string", "minLength": 1},
+        "procurement": {"type": "object"},
+        "source_urls": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "acquired_at": {"type": "string", "format": "date-time"},
+        "documents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "sha256", "source_url"],
+            "properties": {
+              "path": {"type": "string", "minLength": 1},
+              "sha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+              "source_url": {"type": "string", "minLength": 1}
+            },
+            "additionalProperties": true
+          }
+        },
+        "source_scope": {"type": "string", "minLength": 1},
+        "source_conflict": {"type": "boolean"},
+        "provenance_sufficient": {"type": "boolean"}
+      },
+      "additionalProperties": true
+    },
+    "blindDiscoveryLabel": {
+      "type": "object",
+      "required": ["schema_version", "case_id", "label", "reason", "confidence", "evidence", "frozen_at", "freeze_hash"],
+      "properties": {
+        "schema_version": {"const": "1.0.0"},
+        "case_id": {"type": "string", "minLength": 1},
+        "label": {"enum": ["RELEVANT", "PARTIALLY_RELEVANT", "IRRELEVANT", "UNCLEAR"]},
+        "reason": {"type": "string"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidenceRef"}},
+        "frozen_at": {"type": "string", "format": "date-time"},
+        "freeze_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "blindDocumentTruthFact": {
+      "type": "object",
+      "required": ["field", "value", "evidence", "confidence", "abstention"],
+      "properties": {
+        "field": {"type": "string", "minLength": 1},
+        "value": {},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidenceRef"}},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "abstention": {"enum": ["ASSERTED", "UNKNOWN", "INSUFFICIENT_EVIDENCE"]}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"abstention": {"enum": ["UNKNOWN", "INSUFFICIENT_EVIDENCE"]}}},
+          "then": {"properties": {"value": {"type": "null"}}}
+        }
+      ],
+      "additionalProperties": false
+    },
+    "blindDocumentTruth": {
+      "type": "object",
+      "required": ["schema_version", "case_id", "facts", "confidence", "frozen_at", "freeze_hash"],
+      "properties": {
+        "schema_version": {"const": "1.0.0"},
+        "case_id": {"type": "string", "minLength": 1},
+        "facts": {"type": "array", "items": {"$ref": "#/$defs/blindDocumentTruthFact"}},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "frozen_at": {"type": "string", "format": "date-time"},
+        "freeze_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "tenderAgentOutputRef": {
+      "type": "object",
+      "required": ["schema_version", "case_id", "runtime_version", "artifact_refs", "produced_at"],
+      "properties": {
+        "schema_version": {"const": "1.0.0"},
+        "case_id": {"type": "string", "minLength": 1},
+        "runtime_version": {"type": "string", "minLength": 1},
+        "artifact_refs": {"type": "object"},
+        "produced_at": {"type": "string", "format": "date-time"}
+      },
+      "additionalProperties": true
+    },
+    "comparisonResult": {
+      "type": "object",
+      "required": ["schema_version", "case_id", "discovery", "document", "material_disagreement", "review_reasons"],
+      "properties": {
+        "schema_version": {"const": "1.0.0"},
+        "case_id": {"type": "string", "minLength": 1},
+        "discovery": {"type": "object"},
+        "document": {
+          "type": "object",
+          "required": ["tp", "fp", "fn", "unsupported_claims", "contradictions", "misses"],
+          "properties": {
+            "tp": {"type": "integer", "minimum": 0},
+            "fp": {"type": "integer", "minimum": 0},
+            "fn": {"type": "integer", "minimum": 0},
+            "unsupported_claims": {"type": "array", "items": {"type": "string"}},
+            "contradictions": {"type": "array", "items": {"type": "object"}},
+            "misses": {"type": "array", "items": {"type": "string"}}
+          },
+          "additionalProperties": true
+        },
+        "material_disagreement": {"type": "boolean"},
+        "review_reasons": {"type": "array", "items": {"type": "string"}},
+        "schema_valid": {"type": "boolean"}
+      },
+      "additionalProperties": true
+    },
+    "reviewState": {
+      "type": "object",
+      "required": ["schema_version", "case_id", "state", "reasons", "updated_at", "reviewer"],
+      "properties": {
+        "schema_version": {"const": "1.0.0"},
+        "case_id": {"type": "string", "minLength": 1},
+        "state": {"enum": ["AI_CURATED_SILVER", "NEEDS_REVIEW", "HUMAN_VERIFIED_GOLD"]},
+        "reasons": {"type": "array", "items": {"type": "string"}},
+        "updated_at": {"type": "string", "format": "date-time"},
+        "reviewer": {
+          "type": "object",
+          "required": ["type", "id"],
+          "properties": {
+            "type": {"enum": ["SYSTEM", "PRODUCT_OWNER"]},
+            "id": {"type": "string", "minLength": 1}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "aggregateScorecard": {
+      "type": "object",
+      "required": ["schema_version", "case_count", "discovery", "document", "review_states"],
+      "properties": {
+        "schema_version": {"const": "1.0.0"},
+        "case_count": {"type": "integer", "minimum": 0},
+        "discovery": {"type": "object"},
+        "document": {"type": "object"},
+        "review_states": {"type": "object"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    {"$ref": "#/$defs/caseManifest"},
+    {"$ref": "#/$defs/blindDiscoveryLabel"},
+    {"$ref": "#/$defs/blindDocumentTruth"},
+    {"$ref": "#/$defs/tenderAgentOutputRef"},
+    {"$ref": "#/$defs/comparisonResult"},
+    {"$ref": "#/$defs/reviewState"},
+    {"$ref": "#/$defs/aggregateScorecard"}
+  ]
+}
