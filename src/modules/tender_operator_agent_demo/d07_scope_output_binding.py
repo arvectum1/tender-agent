@@ -24,16 +24,24 @@ _ORIGINAL_OUTPUT_PAYLOADS: Any = None
 _AUTHORITATIVE_D07_SCOPES = {"rental", "mixed", "unresolved"}
 
 
-def _notice_text(metadata: dict[str, Any], documents: list[Any]) -> str:
-    return (
-        _legacy._collect_role_text(documents, "notice")
-        or _legacy._collect_role_text(documents, "supporting")
-        or str(metadata.get("tender_title") or "")
-    )
+def _classification_notice_text(metadata: dict[str, Any]) -> str:
+    """Return the same stable notice/title input used by canonical D07 replay.
+
+    Supporting documents can contain compatibility boilerplate (for example,
+    generic service wording) that is not the procurement subject. The final
+    serialization binding must therefore not reclassify on a different corpus
+    than the canonical D07 decision that it is supposed to propagate.
+    """
+
+    return str(metadata.get("tender_title") or "")
 
 
 def _bind_semantic_scope(outputs: dict[str, Any], *, metadata: dict[str, Any], documents: list[Any]) -> dict[str, Any]:
-    scope = _legacy._classify_procurement_scope(metadata, documents, _notice_text(metadata, documents))
+    scope = _legacy._classify_procurement_scope(
+        metadata,
+        documents,
+        _classification_notice_text(metadata),
+    )
     primary = str(scope.get("procurement_primary_scope") or "").strip().lower()
     if primary not in _AUTHORITATIVE_D07_SCOPES:
         return outputs
