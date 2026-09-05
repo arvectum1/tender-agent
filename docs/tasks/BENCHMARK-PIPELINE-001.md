@@ -2,17 +2,20 @@
 
 ## Status
 
-Implementation hardening is complete on contract `1.1.0` and the GitHub/CI gate is **PASS**.
+Implementation hardening and repository-side real-calibration preparation are complete on contract `1.1.0`; both GitHub/CI gates are **PASS**.
 
-Canonical merge:
+Canonical merges:
 
 - PR `#56` — `BENCHMARK-PIPELINE-001: harden blind benchmark contract`;
-- `main` merge SHA: `dec002926f0a996c537c854548e3636e905140ba`;
-- pull-request CI run `33982587200`: `completed / success`.
+  - merge SHA: `dec002926f0a996c537c854548e3636e905140ba`;
+  - CI run `33982587200`: `completed / success`.
+- PR `#57` — `BENCHMARK-PIPELINE-001: add safe real calibration Phase A`;
+  - merge SHA: `0958505576cdcd8a7edeb0a5d4973bf07f43cf76`;
+  - CI run `33985540698`: `completed / success`.
 
-The only remaining acceptance gate is the first real-source calibration on the Mac mini. Do **not** start autonomous 30–50 procurement corpus growth yet.
+The only remaining acceptance gate is execution of the first real-source calibration on the Mac mini and independent evaluation of the generated source-only bundle. Do **not** start autonomous 30–50 procurement corpus growth yet.
 
-The first calibration target is now fixed to a real **44-FZ** Cybox/SciBox case so it can use the already accepted Mac mini public-source path without expanding source scope:
+The first calibration target is fixed to a real **44-FZ** Cybox/SciBox case so it can use the already accepted Mac mini public-source path without expanding source scope:
 
 - primary: procurement `0848300045426000620` — МКУ «Служба кладбищ» Одинцовского городского округа, ИИ-ассистенты on the «Сайбокс» platform;
 - fallback: another previously reviewed 44-FZ Cybox/SciBox case if the primary public bundle can no longer be acquired completely;
@@ -33,7 +36,8 @@ The first calibration target is now fixed to a real **44-FZ** Cybox/SciBox case 
 - explicit `AI_CURATED_SILVER`, `NEEDS_REVIEW`, `HUMAN_VERIFIED_GOLD` transitions;
 - Product Owner gold promotion requires explicit identity and approval note and does not rewrite frozen truth;
 - deterministic CLI plus batch comparator/aggregate scorecard;
-- focused calibration tests for the three required workflow classes.
+- focused workflow calibration tests;
+- dedicated `scripts/prepare_benchmark_calibration_phase_a.py` helper for the first real case. It selects the exact registry number, explicitly forces `analyze_after_download=false`, rejects any pre-freeze analysis/recommendation leakage, copies exact source bytes, hashes them, validates the v1.1.0 manifest, builds the source-only evaluator bundle and packages only blind-evaluator inputs into a ZIP.
 
 ## Anti-circularity contract
 
@@ -48,7 +52,8 @@ The following are fail-closed:
 3. labels are created before evaluator-bundle preparation or changed after freeze;
 4. manifest/evaluator/source digests change after freeze;
 5. Tender Agent output is generated at/before freeze or against another source/label digest;
-6. normalized runtime output does not match its declared digest.
+6. normalized runtime output does not match its declared digest;
+7. Phase A detects a non-`not_started` analysis mode, a final recommendation, or analysis/LLM/fallback events before independent labels are frozen.
 
 ## Comparator and review-state rule
 
@@ -58,16 +63,9 @@ A high-confidence, source-grounded label remains `AI_CURATED_SILVER` even if Ten
 
 This prevents circularity where Tender Agent's own failure could cause its independent truth to be rewritten.
 
-## GitHub/CI gate — PASS
+## GitHub/CI gates — PASS
 
-Required repository checks are satisfied by the successful PR CI:
-
-```bash
-python -m pytest -q tests/test_benchmark_pipeline.py
-python -m compileall -q src scripts
-```
-
-The normal repository CI also completed the existing dependency-lock, security, migrations, quality, Redis, Postgres/R8 acceptance and Arvectum OS bridge jobs successfully for the merged head.
+Both #56 and #57 completed the normal repository CI successfully. The second gate includes the dedicated network-free Phase A tests plus the existing dependency-lock, security, migrations, quality, Redis, Postgres/R8 acceptance and Arvectum OS bridge jobs.
 
 ## Real calibration gate
 
@@ -75,16 +73,35 @@ Use **one case first**. Add a second or third only after inspecting the first en
 
 ### Phase A — local source preparation; STOP before SUT
 
-On the Mac mini:
+With the Tender Agent backend already running on the Mac mini, fast-forward the local checkout to canonical `main` at or after `0958505576cdcd8a7edeb0a5d4973bf07f43cf76`, then run:
 
-1. fast-forward the local `tender-agent` checkout to canonical `main` at or after `dec002926f0a996c537c854548e3636e905140ba`;
-2. acquire the exact public source/document bundle for procurement `0848300045426000620` through the accepted read-only Tender Agent 44-FZ source path;
-3. persist the original acquired public artifacts under a dedicated benchmark case directory;
-4. build `case_manifest.json` with real raw-byte SHA-256 hashes and the canonical `source_bundle_sha256`;
-5. run `scripts/benchmark_pipeline.py prepare-blind` to create `evaluator_bundle.json`;
-6. validate that the evaluator bundle contains only source metadata and no Tender Agent ranking, analysis, report, score, extracted facts or other SUT-derived fields;
-7. package/provide the case source bundle plus `case_manifest.json` and `evaluator_bundle.json` to the independent evaluator;
-8. **STOP. Do not run Tender Agent analysis and do not create any SUT output yet.**
+```bash
+python3 scripts/prepare_benchmark_calibration_phase_a.py \
+  --registry-number 0848300045426000620 \
+  --backend-url http://127.0.0.1:8000
+```
+
+Expected successful marker:
+
+`BENCHMARK_CALIBRATION_PHASE_A_READY`
+
+Default case directory:
+
+`company_agent_runs/benchmark_calibration/calibration-44fz-0848300045426000620/`
+
+Blind evaluator package:
+
+`company_agent_runs/benchmark_calibration/calibration-44fz-0848300045426000620-blind-evaluator-input.zip`
+
+The ZIP contains only:
+
+- `case_manifest.json`;
+- `evaluator_bundle.json`;
+- exact acquired public files under `source/**`.
+
+The helper itself performs the accepted read-only 44-FZ search/intake, exact-registry selection, source-byte copy, raw SHA-256 hashing, manifest/source verification and evaluator-bundle packaging. It explicitly disables automatic Tender Agent analysis.
+
+After the helper reports READY: **STOP. Do not call the analysis endpoint, do not create any SUT output and do not freeze labels. Return/upload the evaluator ZIP to the independent evaluator first.**
 
 ### Independent evaluator boundary
 
@@ -108,22 +125,20 @@ Only after the independent labels exist:
 
 ## Local Mac mini boundary
 
-Only local-machine/runtime work should be handed to Codex/OpenCode:
+Only local-machine/runtime work remains:
 
-- accepted-path public-source acquisition/download;
-- real local file hashes/manifests;
-- preparation of the source-only evaluator bundle;
-- real Tender Agent runtime execution **after** freeze;
-- normalization/persistence of local runtime outputs;
-- running the already-implemented comparator/review router on the real calibration bundle.
+- start/use the already accepted Tender Agent backend on the Mac mini;
+- execute the Phase A helper above against the real public source;
+- return the generated evaluator ZIP;
+- after independent labels are frozen, execute the real Tender Agent runtime and deterministic Phase B commands.
 
-Contract design, schemas, semantic benchmark truth, comparator semantics, review routing, tests and batch tooling remain repository-owned / independent-evaluator-owned and must not be reimplemented or semantically decided by the local runner.
+Contract design, schemas, semantic benchmark truth, comparator semantics, review routing, tests, source-only Phase A orchestration and batch tooling are already repository-owned and must not be reimplemented or semantically decided by the local runner.
 
 ## Exit criteria before corpus growth
 
 Do not proceed to 30–50 cases until all are true:
 
-- GitHub/CI gate remains green on canonical main;
+- GitHub/CI gates remain green on canonical main;
 - at least one and no more than three real calibration cases complete the exact blind order;
 - no evaluator bundle contains SUT leakage;
 - frozen digests detect tampering and source mismatch;
