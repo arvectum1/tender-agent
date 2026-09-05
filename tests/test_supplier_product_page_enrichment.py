@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+import src.modules.supplier_search.product_page_enrichment as product_page_enrichment
 from src.modules.quote_comparison.position_matching import ProcurementPosition, SupplierOfferCandidate
 from src.modules.supplier_search.product_page_enrichment import (
     ProductPageFetchResult,
@@ -138,3 +139,43 @@ def test_fetcher_rejects_private_or_non_http_urls_without_network() -> None:
 
     assert private.error == "non-public IP addresses are not allowed"
     assert file_url.error == "only http/https URLs are allowed"
+
+
+def test_fetcher_does_not_follow_redirect_to_private_host(monkeypatch) -> None:
+    requested_urls: list[str] = []
+
+    class FakeResponse:
+        status_code = 302
+        headers = {"location": "http://127.0.0.1/private"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    class FakeHttpClient:
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def stream(self, method: str, url: str):
+            requested_urls.append(url)
+            return FakeResponse()
+
+    monkeypatch.setattr(product_page_enrichment.httpx, "Client", FakeHttpClient)
+    monkeypatch.setattr(
+        product_page_enrichment.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(None, None, None, None, ("8.8.8.8", 443))],
+    )
+
+    result = ProductPageFetcher().fetch("https://supplier.example/product")
+
+    assert result.error == "unsafe redirect URL: non-public IP addresses are not allowed"
+    assert requested_urls == ["https://supplier.example/product"]
