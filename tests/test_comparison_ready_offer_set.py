@@ -1,5 +1,7 @@
 from decimal import Decimal
 
+import pytest
+
 from src.modules.quote_comparison.comparison_ready_offer_set import (
     ComparisonReadyOffer,
     adapt_formal_quote,
@@ -14,9 +16,13 @@ from src.modules.quote_comparison.position_matching import (
     rank_offers_for_position,
 )
 from src.modules.quote_repository.models import QuoteArtifactBinding, QuoteRecord
+from src.modules.supplier_search.position_offer_discovery import (
+    search_result_to_candidate,
+)
 from src.modules.supplier_search.product_page_enrichment import (
     enrich_candidate_from_product_page,
 )
+from src.modules.supplier_search.yandex_search_client import YandexSearchResult
 
 
 def _position() -> ProcurementPosition:
@@ -158,18 +164,44 @@ def test_missing_commercial_data_stays_unknown_with_explicit_flags() -> None:
     offer = adapt_public_offer(match, enrichment=enrichment)
 
     assert offer.observed_unit_price is None
+    assert offer.currency_code is None
     assert offer.vat_mode == "unknown"
     assert offer.moq is None
     assert offer.delivery_time_days is None
     assert offer.availability == "unknown"
     assert set(offer.unresolved_fields) >= {
         "price",
+        "currency_code",
         "vat_mode",
         "vat_rate",
         "moq",
         "delivery_time_days",
         "availability",
     }
+    assert all(item.field_name != "currency_code" for item in offer.provenance)
+
+
+def test_evidenced_rub_price_retains_currency_with_truthful_provenance() -> None:
+    result = YandexSearchResult(
+        title="Контактор КМИ-22510",
+        url="https://public.example/evidenced-rub",
+        domain="public.example",
+        snippet="Цена 1 200 ₽.",
+    )
+    offer = adapt_public_offer(
+        match_offer_to_position(
+            _position(), search_result_to_candidate(_position(), result)
+        )
+    )
+
+    assert offer.observed_unit_price == Decimal("1200.00")
+    assert offer.currency_code == "RUB"
+    assert "currency_code" not in offer.unresolved_fields
+    currency_provenance = next(
+        item for item in offer.provenance if item.field_name == "currency_code"
+    )
+    assert currency_provenance.source_kind == "normalized"
+    assert currency_provenance.source_ref == result.url
 
 
 def test_conflicting_source_identity_is_not_unsafely_deduplicated() -> None:
@@ -222,6 +254,34 @@ def test_public_rank_cannot_produce_recommended_supplier_id() -> None:
     assert offer_set.best_public_offer_id == "public-1"
     assert offer_set.formal_recommendation.status == "not_ready"
     assert offer_set.formal_recommendation.recommended_supplier_id is None
+
+
+def test_unknown_best_public_offer_id_is_rejected() -> None:
+    with pytest.raises(ValueError, match="best_public_offer_id"):
+        build_comparison_ready_offer_set(
+            "position-1",
+            public_offers=[adapt_public_offer(_public_match())],
+            best_public_offer_id="stale-public-offer",
+        )
+
+
+def test_ineligible_best_public_offer_id_is_rejected() -> None:
+    ineligible = adapt_public_offer(
+        match_offer_to_position(
+            _position(),
+            _public_candidate(offer_id="public-ineligible").model_copy(
+                update={"article": "different-article"}
+            ),
+        )
+    )
+    assert ineligible.eligible is False
+
+    with pytest.raises(ValueError, match="eligible public offer"):
+        build_comparison_ready_offer_set(
+            "position-1",
+            public_offers=[ineligible],
+            best_public_offer_id="public-ineligible",
+        )
 
 
 def test_operator_api_makes_public_and_formal_recommendation_states_explicit(

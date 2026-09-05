@@ -117,7 +117,6 @@ def _candidate_provenance(
         "brand",
         "model",
         "article",
-        "currency_code",
         "vat_mode",
         "vat_rate",
         "moq",
@@ -147,6 +146,29 @@ def _candidate_provenance(
     ]
 
 
+def _public_currency_provenance(
+    normalized: NormalizedSupplierOffer,
+    enrichment: ProductPageEnrichmentOutcome | None,
+) -> OfferFieldProvenance | None:
+    if normalized.observed_unit_price is None:
+        return None
+    if enrichment is not None and (
+        price_evidence := enrichment.evidence.get("unit_price")
+    ):
+        return OfferFieldProvenance(
+            field_name="currency_code",
+            source_kind="product_page",
+            source_ref=price_evidence.source_url,
+            evidence=price_evidence.evidence,
+        )
+    return OfferFieldProvenance(
+        field_name="currency_code",
+        source_kind="normalized",
+        source_ref=normalized.source_ref,
+        evidence="currency retained only with a parser-recognized public price",
+    )
+
+
 def adapt_public_offer(
     match: PositionOfferMatch,
     *,
@@ -165,6 +187,11 @@ def adapt_public_offer(
     )
     availability: OfferAvailability = "unknown"
     provenance = _candidate_provenance(match, normalized)
+    currency_code = (
+        normalized.currency_code if normalized.observed_unit_price is not None else None
+    )
+    if currency_provenance := _public_currency_provenance(normalized, enrichment):
+        provenance.append(currency_provenance)
     if enrichment is not None:
         availability = enrichment.availability
         for field_name, evidence in sorted(enrichment.evidence.items()):
@@ -194,7 +221,7 @@ def adapt_public_offer(
         model=normalized.model,
         article=normalized.article,
         observed_unit_price=normalized.observed_unit_price,
-        currency_code=normalized.currency_code,
+        currency_code=currency_code,
         vat_mode=normalized.vat_mode,
         vat_rate=normalized.vat_rate,
         moq=normalized.moq,
@@ -333,6 +360,23 @@ def build_comparison_ready_offer_set(
         raise ValueError("public_offers must contain only public_web offers")
     if any(offer.source_type != "commercial_quote" for offer in formal):
         raise ValueError("formal_offers must contain only commercial_quote offers")
+    if best_public_offer_id is not None:
+        best_offer = next(
+            (offer for offer in public if offer.offer_id == best_public_offer_id),
+            None,
+        )
+        if best_offer is None:
+            raise ValueError(
+                "best_public_offer_id must reference a supplied public offer"
+            )
+        if best_offer.position_id != position_id:
+            raise ValueError(
+                "best_public_offer_id must reference the requested position"
+            )
+        if not best_offer.eligible:
+            raise ValueError(
+                "best_public_offer_id must reference an eligible public offer"
+            )
 
     merged = _deduplicate(all_offers)
     merged.sort(
