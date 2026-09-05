@@ -21,7 +21,7 @@ The workflow is deliberately asymmetric:
 
 The evaluator bundle must never contain Tender Agent ranking, extracted facts,
 reports, score reasons, comparator output, or prior prose analysis. Historical
-Cybox/RSL write-ups are calibration context only; they are **not** benchmark truth.
+SciBox/RSL write-ups are calibration context only; they are **not** benchmark truth.
 The seed cases are usable only after their original public materials are imported
 through the accepted product collection path.
 
