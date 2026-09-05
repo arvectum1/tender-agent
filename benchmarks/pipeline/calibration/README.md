@@ -1,7 +1,7 @@
 # Calibration gate
 
 The initial calibration set is deliberately capped at three procurements already
-reviewed with the Product Owner: two Cybox cases and the RSL case referenced by
+reviewed with the Product Owner: two SciBox cases and the RSL case referenced by
 issue #52.
 
 No old chat analysis, prior report, manual ranking, or previously extracted fact
