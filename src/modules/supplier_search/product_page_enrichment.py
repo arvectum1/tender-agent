@@ -7,19 +7,15 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from html.parser import HTMLParser
 from typing import Literal, Protocol
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
-from src.modules.quote_comparison.position_matching import (
-    ProcurementPosition,
-    SupplierOfferCandidate,
-)
-
+from src.modules.quote_comparison.position_matching import ProcurementPosition, SupplierOfferCandidate
 
 _PRICE_RE = re.compile(
     r"(?P<value>\d{1,3}(?:[\s\u00a0]\d{3})*(?:[,.]\d{1,2})?|\d+(?:[,.]\d{1,2})?)"
-    r"\s*(?P<currency>₽|руб(?:\.|лей|ля)?|RUB)(?!\w)",
+    r"\s*(?:₽|руб(?:\.|лей|ля)?|RUB)(?!\w)",
     re.IGNORECASE,
 )
 _VAT_INCLUDED_RE = re.compile(r"\b(?:с\s+ндс|ндс\s+включ(?:ен|ён|ено|ена))\b", re.IGNORECASE)
@@ -35,6 +31,7 @@ _MOQ_RE = re.compile(
 )
 _IN_STOCK_RE = re.compile(r"\b(?:в\s+наличии|есть\s+в\s+наличии|на\s+складе)\b", re.IGNORECASE)
 _OUT_OF_STOCK_RE = re.compile(r"\b(?:нет\s+в\s+наличии|не\s+в\s+наличии|под\s+заказ)\b", re.IGNORECASE)
+_ALLOWED_CONTENT_TYPES = {"text/html", "application/xhtml+xml", "text/plain"}
 _TRANSLIT = str.maketrans(
     {
         "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
@@ -44,7 +41,6 @@ _TRANSLIT = str.maketrans(
         "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
     }
 )
-_ALLOWED_CONTENT_TYPES = ("text/html", "application/xhtml+xml", "text/plain")
 
 Availability = Literal["in_stock", "out_of_stock", "unknown"]
 
@@ -82,6 +78,8 @@ class ProductPageFetchClient(Protocol):
 
 
 class ProductPageFetcher:
+    """Bounded public-page fetcher. Redirects are followed only after URL safety checks."""
+
     def __init__(
         self,
         *,
@@ -94,68 +92,97 @@ class ProductPageFetcher:
         self._max_redirects = max_redirects
 
     def fetch(self, url: str) -> ProductPageFetchResult:
-        safety_error = _validate_public_url(url)
-        if safety_error:
-            return ProductPageFetchResult(requested_url=url, error=safety_error)
-
+        requested_url = url
+        current_url = url
         try:
             with httpx.Client(
                 timeout=self._timeout_seconds,
-                follow_redirects=True,
-                max_redirects=self._max_redirects,
+                follow_redirects=False,
                 headers={"User-Agent": "ArvectumSupplierSearch/1.0"},
             ) as client:
-                with client.stream("GET", url) as response:
-                    final_url = str(response.url)
-                    redirect_error = _validate_public_url(final_url)
-                    if redirect_error:
+                for redirect_count in range(self._max_redirects + 1):
+                    safety_error = _validate_public_url(current_url)
+                    if safety_error:
                         return ProductPageFetchResult(
-                            requested_url=url,
-                            final_url=final_url,
-                            status_code=response.status_code,
-                            error=f"unsafe final URL: {redirect_error}",
-                        )
-                    if response.status_code < 200 or response.status_code >= 300:
-                        return ProductPageFetchResult(
-                            requested_url=url,
-                            final_url=final_url,
-                            status_code=response.status_code,
-                            error=f"HTTP {response.status_code}",
-                        )
-                    content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-                    if content_type and content_type not in _ALLOWED_CONTENT_TYPES:
-                        return ProductPageFetchResult(
-                            requested_url=url,
-                            final_url=final_url,
-                            status_code=response.status_code,
-                            content_type=content_type,
-                            error=f"unsupported content type: {content_type}",
+                            requested_url=requested_url,
+                            final_url=current_url if current_url != requested_url else None,
+                            error=safety_error,
                         )
 
-                    chunks: list[bytes] = []
-                    size = 0
-                    for chunk in response.iter_bytes():
-                        size += len(chunk)
-                        if size > self._max_bytes:
+                    with client.stream("GET", current_url) as response:
+                        if 300 <= response.status_code < 400:
+                            location = response.headers.get("location")
+                            if not location:
+                                return ProductPageFetchResult(
+                                    requested_url=requested_url,
+                                    final_url=current_url,
+                                    status_code=response.status_code,
+                                    error="redirect response has no Location header",
+                                )
+                            if redirect_count >= self._max_redirects:
+                                return ProductPageFetchResult(
+                                    requested_url=requested_url,
+                                    final_url=current_url,
+                                    status_code=response.status_code,
+                                    error=f"more than {self._max_redirects} redirects",
+                                )
+                            next_url = urljoin(current_url, location)
+                            redirect_error = _validate_public_url(next_url)
+                            if redirect_error:
+                                return ProductPageFetchResult(
+                                    requested_url=requested_url,
+                                    final_url=next_url,
+                                    status_code=response.status_code,
+                                    error=f"unsafe redirect URL: {redirect_error}",
+                                )
+                            current_url = next_url
+                            continue
+
+                        if response.status_code < 200 or response.status_code >= 300:
                             return ProductPageFetchResult(
-                                requested_url=url,
-                                final_url=final_url,
+                                requested_url=requested_url,
+                                final_url=current_url,
                                 status_code=response.status_code,
-                                content_type=content_type or None,
-                                error=f"product page exceeds {self._max_bytes} bytes",
+                                error=f"HTTP {response.status_code}",
                             )
-                        chunks.append(chunk)
-                    encoding = response.encoding or "utf-8"
-                    html = b"".join(chunks).decode(encoding, errors="replace")
-                    return ProductPageFetchResult(
-                        requested_url=url,
-                        final_url=final_url,
-                        html=html,
-                        status_code=response.status_code,
-                        content_type=content_type or None,
-                    )
+
+                        content_type = (
+                            response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+                        )
+                        if content_type and content_type not in _ALLOWED_CONTENT_TYPES:
+                            return ProductPageFetchResult(
+                                requested_url=requested_url,
+                                final_url=current_url,
+                                status_code=response.status_code,
+                                content_type=content_type,
+                                error=f"unsupported content type: {content_type}",
+                            )
+
+                        chunks: list[bytes] = []
+                        size = 0
+                        for chunk in response.iter_bytes():
+                            size += len(chunk)
+                            if size > self._max_bytes:
+                                return ProductPageFetchResult(
+                                    requested_url=requested_url,
+                                    final_url=current_url,
+                                    status_code=response.status_code,
+                                    content_type=content_type or None,
+                                    error=f"product page exceeds {self._max_bytes} bytes",
+                                )
+                            chunks.append(chunk)
+                        encoding = response.encoding or "utf-8"
+                        return ProductPageFetchResult(
+                            requested_url=requested_url,
+                            final_url=current_url,
+                            html=b"".join(chunks).decode(encoding, errors="replace"),
+                            status_code=response.status_code,
+                            content_type=content_type or None,
+                        )
         except Exception as exc:
-            return ProductPageFetchResult(requested_url=url, error=f"fetch failed: {exc}")
+            return ProductPageFetchResult(requested_url=requested_url, error=f"fetch failed: {exc}")
+
+        return ProductPageFetchResult(requested_url=requested_url, error="redirect limit exceeded")
 
 
 class _VisibleTextParser(HTMLParser):
@@ -184,18 +211,14 @@ class _VisibleTextParser(HTMLParser):
         if self._ignored_depth:
             return
         normalized = re.sub(r"\s+", " ", data).strip()
-        if not normalized:
-            return
-        self.text_parts.append(normalized)
-        if self._in_title:
-            self.title_parts.append(normalized)
+        if normalized:
+            self.text_parts.append(normalized)
+            if self._in_title:
+                self.title_parts.append(normalized)
 
 
 def _validate_public_url(url: str) -> str | None:
-    try:
-        parsed = urlparse(url)
-    except Exception:
-        return "invalid URL"
+    parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
         return "only http/https URLs are allowed"
     if not parsed.hostname:
@@ -215,7 +238,10 @@ def _validate_public_url(url: str) -> str | None:
         return None if _is_public_ip(literal) else "non-public IP addresses are not allowed"
 
     try:
-        addresses = {item[4][0] for item in socket.getaddrinfo(host, parsed.port or 443, type=socket.SOCK_STREAM)}
+        addresses = {
+            item[4][0]
+            for item in socket.getaddrinfo(host, parsed.port or 443, type=socket.SOCK_STREAM)
+        }
     except OSError as exc:
         return f"host resolution failed: {exc}"
     if not addresses:
@@ -252,31 +278,24 @@ def _page_text(html: str) -> tuple[str, str | None]:
 def _normalize_identifier(value: str | None) -> str:
     if not value:
         return ""
-    transliterated = value.casefold().translate(_TRANSLIT)
-    return re.sub(r"[^0-9a-z]+", "", transliterated, flags=re.IGNORECASE)
+    return re.sub(r"[^0-9a-z]+", "", value.casefold().translate(_TRANSLIT), flags=re.IGNORECASE)
 
 
 def _identifier_evidence(expected: str | None, text: str) -> str | None:
     normalized_expected = _normalize_identifier(expected)
-    if not normalized_expected:
-        return None
-    if normalized_expected in _normalize_identifier(text):
+    if normalized_expected and normalized_expected in _normalize_identifier(text):
         return _evidence_context(text, expected or "")
     return None
 
 
 def _evidence_context(text: str, needle: str, *, radius: int = 80) -> str:
-    if not text:
-        return ""
     index = text.casefold().find(needle.casefold()) if needle else -1
     if index < 0:
         return text[: radius * 2].strip()
-    start = max(0, index - radius)
-    end = min(len(text), index + len(needle) + radius)
-    return text[start:end].strip()
+    return text[max(0, index - radius) : min(len(text), index + len(needle) + radius)].strip()
 
 
-def _decimal_from_match(match: re.Match[str] | None, group: str) -> Decimal | None:
+def _decimal(match: re.Match[str] | None, group: str) -> Decimal | None:
     if not match:
         return None
     raw = match.group(group).replace("\u00a0", " ").replace(" ", "").replace(",", ".")
@@ -287,14 +306,20 @@ def _decimal_from_match(match: re.Match[str] | None, group: str) -> Decimal | No
     return value if value >= 0 else None
 
 
-def _availability(text: str) -> tuple[Availability, re.Match[str] | None]:
-    out_match = _OUT_OF_STOCK_RE.search(text)
-    if out_match:
-        return "out_of_stock", out_match
-    in_match = _IN_STOCK_RE.search(text)
-    if in_match:
-        return "in_stock", in_match
-    return "unknown", None
+def _add_evidence(
+    evidence: dict[str, ProductPageFieldEvidence],
+    field_name: str,
+    value: object,
+    text: str,
+    match: re.Match[str],
+    source_url: str,
+) -> None:
+    evidence[field_name] = ProductPageFieldEvidence(
+        field_name=field_name,
+        value=str(value),
+        evidence=_evidence_context(text, match.group(0)),
+        source_url=source_url,
+    )
 
 
 def enrich_candidate_from_product_page(
@@ -318,86 +343,60 @@ def enrich_candidate_from_product_page(
     evidence: dict[str, ProductPageFieldEvidence] = {}
 
     price_match = _PRICE_RE.search(text)
-    price = _decimal_from_match(price_match, "value")
-    if price is not None and price_match is not None:
-        updates["unit_price"] = price
-        updates["currency_code"] = "RUB"
-        evidence["unit_price"] = ProductPageFieldEvidence(
-            field_name="unit_price",
-            value=str(price),
-            evidence=_evidence_context(text, price_match.group(0)),
-            source_url=page_url,
-        )
+    price = _decimal(price_match, "value")
+    if price is not None and price_match:
+        updates.update(unit_price=price, currency_code="RUB")
+        _add_evidence(evidence, "unit_price", price, text, price_match, page_url)
 
-    vat_rate_match = _VAT_RATE_RE.search(text)
-    vat_rate = _decimal_from_match(vat_rate_match, "rate")
-    vat_mode: str | None = None
-    vat_mode_match: re.Match[str] | None = None
     excluded_match = _VAT_EXCLUDED_RE.search(text)
     included_match = _VAT_INCLUDED_RE.search(text)
-    if excluded_match:
-        vat_mode, vat_mode_match = "excluded", excluded_match
-    elif included_match:
-        vat_mode, vat_mode_match = "included", included_match
-    if vat_mode is not None and vat_mode_match is not None:
+    vat_mode_match = excluded_match or included_match
+    if vat_mode_match:
+        vat_mode = "excluded" if excluded_match else "included"
         updates["vat_mode"] = vat_mode
-        evidence["vat_mode"] = ProductPageFieldEvidence(
-            field_name="vat_mode",
-            value=vat_mode,
-            evidence=_evidence_context(text, vat_mode_match.group(0)),
-            source_url=page_url,
-        )
-    if vat_rate is not None and vat_rate_match is not None:
+        _add_evidence(evidence, "vat_mode", vat_mode, text, vat_mode_match, page_url)
+
+    vat_rate_match = _VAT_RATE_RE.search(text)
+    vat_rate = _decimal(vat_rate_match, "rate")
+    if vat_rate is not None and vat_rate_match:
         updates["vat_rate"] = vat_rate
-        evidence["vat_rate"] = ProductPageFieldEvidence(
-            field_name="vat_rate",
-            value=str(vat_rate),
-            evidence=_evidence_context(text, vat_rate_match.group(0)),
-            source_url=page_url,
-        )
+        _add_evidence(evidence, "vat_rate", vat_rate, text, vat_rate_match, page_url)
 
     moq_match = _MOQ_RE.search(text)
-    moq = _decimal_from_match(moq_match, "qty")
-    if moq is not None and moq > 0 and moq_match is not None:
+    moq = _decimal(moq_match, "qty")
+    if moq is not None and moq > 0 and moq_match:
         updates["moq"] = moq
-        evidence["moq"] = ProductPageFieldEvidence(
-            field_name="moq",
-            value=str(moq),
-            evidence=_evidence_context(text, moq_match.group(0)),
-            source_url=page_url,
-        )
+        _add_evidence(evidence, "moq", moq, text, moq_match, page_url)
 
     delivery_match = _DELIVERY_DAYS_RE.search(text)
-    delivery = _decimal_from_match(delivery_match, "days")
-    if delivery is not None and delivery_match is not None:
-        updates["delivery_time_days"] = int(delivery)
-        evidence["delivery_time_days"] = ProductPageFieldEvidence(
-            field_name="delivery_time_days",
-            value=str(int(delivery)),
-            evidence=_evidence_context(text, delivery_match.group(0)),
-            source_url=page_url,
-        )
+    delivery = _decimal(delivery_match, "days")
+    if delivery is not None and delivery_match:
+        delivery_days = int(delivery)
+        updates["delivery_time_days"] = delivery_days
+        _add_evidence(evidence, "delivery_time_days", delivery_days, text, delivery_match, page_url)
 
     for field_name in ("manufacturer", "brand", "model", "article"):
         expected = getattr(position, field_name)
-        matched_context = _identifier_evidence(expected, text)
-        if expected and matched_context:
+        context = _identifier_evidence(expected, text)
+        if expected and context:
             updates[field_name] = expected
             evidence[field_name] = ProductPageFieldEvidence(
                 field_name=field_name,
                 value=expected,
-                evidence=matched_context,
+                evidence=context,
                 source_url=page_url,
             )
 
-    availability, availability_match = _availability(text)
-    if availability_match is not None:
-        evidence["availability"] = ProductPageFieldEvidence(
-            field_name="availability",
-            value=availability,
-            evidence=_evidence_context(text, availability_match.group(0)),
-            source_url=page_url,
-        )
+    out_match = _OUT_OF_STOCK_RE.search(text)
+    in_match = _IN_STOCK_RE.search(text)
+    availability: Availability = "unknown"
+    availability_match: re.Match[str] | None = None
+    if out_match:
+        availability, availability_match = "out_of_stock", out_match
+    elif in_match:
+        availability, availability_match = "in_stock", in_match
+    if availability_match:
+        _add_evidence(evidence, "availability", availability, text, availability_match, page_url)
 
     if title:
         evidence["page_title"] = ProductPageFieldEvidence(
@@ -407,11 +406,10 @@ def enrich_candidate_from_product_page(
             source_url=page_url,
         )
 
-    enriched = candidate.model_copy(update=updates)
     return ProductPageEnrichmentOutcome(
         offer_id=candidate.offer_id,
         source_url=page_url,
-        candidate=enriched,
+        candidate=candidate.model_copy(update=updates),
         availability=availability,
         evidence=evidence,
     )
