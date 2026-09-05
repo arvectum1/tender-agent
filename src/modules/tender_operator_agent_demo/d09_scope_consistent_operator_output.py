@@ -31,6 +31,19 @@ def _neutral_guidance(primary: str) -> list[str]:
     ]
 
 
+def _neutral_rfq_sections(primary: str) -> list[str]:
+    subject_labels = {
+        "rental": "Предмет и существенные условия аренды",
+        "mixed": "Предмет и существенные условия смешанной закупки",
+        "unresolved": "Предмет закупки и условия, требующие уточнения",
+    }
+    return [
+        subject_labels.get(primary, "Предмет и существенные условия закупки"),
+        "Срок, место и порядок исполнения по документам закупки",
+        "Документы и подтверждения, прямо требуемые закупкой",
+    ]
+
+
 def _bind_operator_scope(outputs: dict[str, Any], *, metadata: dict[str, Any], documents: list[Any]) -> dict[str, Any]:
     scope = _legacy._classify_procurement_scope(metadata, documents, str(metadata.get("tender_title") or ""))
     primary = str(scope.get("procurement_primary_scope") or "").strip().lower()
@@ -65,6 +78,15 @@ def _bind_operator_scope(outputs: dict[str, Any], *, metadata: dict[str, Any], d
         # stale GOODS/SERVICES/WORKS-shaped procurement_scope here.
         context["procurement_scope"] = deepcopy(scope)
         context["semantic_procurement_scope"] = deepcopy(scope)
+
+    # RFQ presentation is also operator-facing. Legacy RFQ templates are
+    # GOODS-shaped (positions/volume of supply, delivery/certificates/warranty)
+    # and must not survive for RENTAL/MIXED/UNRESOLVED as if they were
+    # applicable procurement facts. Keep the payload shape, but fail closed
+    # with neutral scope-aware section headings.
+    rfq_draft = outputs.get("rfq_draft")
+    if isinstance(rfq_draft, dict):
+        rfq_draft["sections"] = _neutral_rfq_sections(primary)
 
     trace = outputs.get("trace")
     if isinstance(trace, dict):
