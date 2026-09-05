@@ -1,1 +1,0 @@
-Implementation is intentionally adapter-only: M-016 discovers public supplier pages; SUPPLIER-ENGINE-002 turns those source-backed results into Supplier Engine candidates and ranking input. Product-page extraction of price/stock remains a separate future increment.
